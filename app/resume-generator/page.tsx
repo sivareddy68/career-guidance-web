@@ -196,41 +196,150 @@ export default function ResumeGeneratorPage() {
   // AI RESUME GENERATION
   // ------------------------------------------------
 
-  async function generateAIResume() {
-    try {
-      setGenerating(true);
-      setAiError("");
-      setSaveMessage("");
-      setSaveError("");
-      setSavedResumeId(null);
+ 
 
-      const response = await fetch("/api/resume-generator", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          profile,
-          portfolio,
-          projects,
-          skills,
-        }),
-      });
+async function generateAIResume() {
+  try {
+    setGenerating(true);
+    setAiError("");
+    setSaveMessage("");
+    setSaveError("");
+    setSavedResumeId(null);
 
-      const data = await response.json();
+    const response = await fetch("/api/resume-generator", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        profile,
+        portfolio,
+        projects,
+        skills,
+      }),
+    });
 
-      if (!response.ok || !data.success) {
-        throw new Error(data.error || "Unable to generate AI resume.");
-      }
+    const data = await response.json();
 
-      setAiResume(data.resume);
-    } catch (err: any) {
-      console.error("AI resume generation error:", err);
-      setAiError(err?.message || "AI resume generation failed.");
-    } finally {
-      setGenerating(false);
+    if (!response.ok || !data.success) {
+      throw new Error(
+        data.error || "Unable to generate AI resume."
+      );
     }
+
+    const cleanText = (value: unknown): string => {
+      if (typeof value !== "string") return "";
+
+      return value
+        .replace(/```(?:json|markdown|text)?/gi, "")
+        .replace(/```/g, "")
+        .replace(/^\s*#+\s*/gm, "")
+        .replace(/\*\*/g, "")
+        .replace(/\*/g, "")
+        .replace(/^\s*[-•]\s*/gm, "")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim();
+    };
+
+    const resume = data.resume;
+
+    if (!resume || typeof resume !== "object") {
+      throw new Error("AI returned an invalid resume.");
+    }
+
+    const cleanedSummary = cleanText(
+      resume.professional_summary
+    );
+
+    const cleanedObjective = cleanText(
+      resume.career_objective
+    );
+
+    const cleanedSkills: string[] = Array.isArray(resume.skills)
+      ? Array.from(
+          new Set(
+            resume.skills
+              .filter((skill: unknown): skill is string =>
+                typeof skill === "string"
+              )
+              .map((skill: string) => cleanText(skill))
+              .filter(Boolean)
+          )
+        )
+      : [];
+
+    const cleanedProjects: AIProject[] = Array.isArray(resume.projects)
+      ? resume.projects
+          .filter(
+            (project: any) =>
+              project && typeof project === "object"
+          )
+          .map((project: any): AIProject => ({
+            title: cleanText(project.title),
+            description: cleanText(project.description),
+            technologies: convertToArray(project.technologies),
+            link:
+              typeof project.link === "string"
+                ? project.link.trim()
+                : "",
+          }))
+          .filter(
+            (project: AIProject) =>
+              Boolean(
+                project.title ||
+                project.description ||
+                project.technologies?.length
+              )
+          )
+      : [];
+
+    // Ensure fallback skills are always string[].
+    const fallbackSkills: string[] = Array.isArray(skills)
+      ? skills.filter(
+          (skill): skill is string =>
+            typeof skill === "string" && skill.trim().length > 0
+        )
+      : [];
+
+    const fallbackProjects: AIProject[] = projects.map(
+      (project): AIProject => ({
+        title: project.title || "Project",
+        description: project.description || "",
+        technologies: convertToArray(project.technologies),
+        link: project.link || "",
+      })
+    );
+
+    const cleanedResume: AIResume = {
+      professional_summary:
+        cleanedSummary ||
+        portfolio?.about ||
+        "Aspiring professional interested in developing practical skills and building technology solutions.",
+
+      career_objective: cleanedObjective,
+
+      skills: cleanedSkills.length > 0
+        ? cleanedSkills
+        : fallbackSkills,
+
+      projects: cleanedProjects.length > 0
+        ? cleanedProjects
+        : fallbackProjects,
+    };
+
+    setAiResume(cleanedResume);
+
+  } catch (err: any) {
+    console.error("AI resume generation error:", err);
+
+    setAiError(
+      err?.message || "AI resume generation failed."
+    );
+  } finally {
+    setGenerating(false);
   }
+}
+
 
   // ------------------------------------------------
   // SAVE RESUME TO SUPABASE
