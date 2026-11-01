@@ -23,22 +23,93 @@ const CLOUDFLARE_MODEL =
 // --------------------------------------------------
 
 function parseAIJson(raw: string) {
-  if (!raw) {
+  if (!raw || !raw.trim()) {
     throw new Error("AI returned an empty response.");
   }
 
-  try {
-    return JSON.parse(raw);
-  } catch {
-    const start = raw.indexOf("{");
-    const end = raw.lastIndexOf("}");
+  const text = raw.trim();
 
-    if (start === -1 || end === -1) {
-      throw new Error("AI returned invalid JSON.");
+  // First try the complete response directly.
+  try {
+    return JSON.parse(text);
+  } catch {
+    // Continue with extraction below.
+  }
+
+  // Remove common Markdown code fences.
+  const cleaned = text
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    // Continue with balanced JSON extraction.
+  }
+
+  // Find the first complete JSON object.
+  // This avoids the old first-{ / last-} problem when
+  // the AI returns extra JSON or text after the object.
+  let start = -1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = 0; i < cleaned.length; i++) {
+    const char = cleaned[i];
+
+    if (start === -1) {
+      if (char === "{") {
+        start = i;
+        depth = 1;
+      }
+
+      continue;
     }
 
-    return JSON.parse(raw.substring(start, end + 1));
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+
+    if (inString) {
+      continue;
+    }
+
+    if (char === "{") {
+      depth++;
+    } else if (char === "}") {
+      depth--;
+
+      if (depth === 0) {
+        const candidate = cleaned.substring(start, i + 1);
+
+        try {
+          return JSON.parse(candidate);
+        } catch {
+          // Keep searching for another possible JSON object.
+          start = -1;
+          depth = 0;
+        }
+      }
+    }
   }
+
+  throw new Error(
+    "AI returned invalid JSON. Please try generating the resume again."
+  );
 }
 
 // --------------------------------------------------
