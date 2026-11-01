@@ -2513,13 +2513,11 @@ const selectedCourse =
       lesson.id,
     ];
 
-    const position = nextLessonPosition();
-
     const saved = await saveProgress(
-      nextIds,
-      position.week,
-      position.lesson
-    );
+  nextIds,
+  weekIndex,
+  lessonIndex
+);
 
     if (!saved) {
       setMessage(
@@ -2915,10 +2913,13 @@ const selectedCourse =
                           );
                         }
                       }}
-                      disabled={
-                        weekIndex === course.weeks.length - 1 &&
-                        lessonIndex === week.lessons.length - 1
-                      }
+                     disabled={
+  !validCompletedIds.includes(lesson.id) ||
+  (
+    weekIndex === course.weeks.length - 1 &&
+    lessonIndex === week.lessons.length - 1
+  )
+}
                       className="rounded-xl border border-slate-700 px-5 py-3 text-sm font-medium hover:bg-slate-900 disabled:cursor-not-allowed disabled:opacity-40"
                     >
                       Next lesson →
