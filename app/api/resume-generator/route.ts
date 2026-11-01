@@ -8,12 +8,49 @@ const OLLAMA_URL =
 const OLLAMA_MODEL =
   process.env.OLLAMA_MODEL || "qwen2.5:3b";
 
+const CLOUDFLARE_ACCOUNT_ID =
+  process.env.CLOUDFLARE_ACCOUNT_ID || "";
+
+const CLOUDFLARE_API_TOKEN =
+  process.env.CLOUDFLARE_API_TOKEN || "";
+
+const CLOUDFLARE_MODEL =
+  process.env.CLOUDFLARE_MODEL ||
+  "@cf/meta/llama-3.1-8b-instruct";
+
+// --------------------------------------------------
+// JSON PARSER
+// --------------------------------------------------
+
+function parseAIJson(raw: string) {
+  if (!raw) {
+    throw new Error("AI returned an empty response.");
+  }
+
+  try {
+    return JSON.parse(raw);
+  } catch {
+    const start = raw.indexOf("{");
+    const end = raw.lastIndexOf("}");
+
+    if (start === -1 || end === -1) {
+      throw new Error("AI returned invalid JSON.");
+    }
+
+    return JSON.parse(raw.substring(start, end + 1));
+  }
+}
+
+// --------------------------------------------------
+// LOCAL OLLAMA AI
+// --------------------------------------------------
+
 async function askOllama(prompt: string, numPredict = 1600) {
   const controller = new AbortController();
 
   const timeout = setTimeout(() => {
     controller.abort();
-  }, 120000);
+  }, 90000);
 
   try {
     const response = await fetch(OLLAMA_URL, {
@@ -44,50 +81,114 @@ async function askOllama(prompt: string, numPredict = 1600) {
     const data = await response.json();
     const raw = data?.response?.trim();
 
-    if (!raw) {
-      throw new Error("AI returned an empty response.");
-    }
-
-    try {
-      return JSON.parse(raw);
-    } catch {
-      const start = raw.indexOf("{");
-      const end = raw.lastIndexOf("}");
-
-      if (start === -1 || end === -1) {
-        throw new Error("AI returned invalid JSON.");
-      }
-
-      return JSON.parse(raw.substring(start, end + 1));
-    }
+    return parseAIJson(raw);
   } finally {
     clearTimeout(timeout);
   }
 }
 
+// --------------------------------------------------
+// CLOUD HOSTED AI - CLOUDFLARE WORKERS AI
+// --------------------------------------------------
+
+async function askCloudflare(prompt: string, numPredict = 1600) {
+  if (!CLOUDFLARE_ACCOUNT_ID || !CLOUDFLARE_API_TOKEN) {
+    throw new Error(
+      "Cloudflare AI is not configured. Add CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN to your environment variables."
+    );
+  }
+
+  const controller = new AbortController();
+
+  const timeout = setTimeout(() => {
+    controller.abort();
+  }, 90000);
+
+  try {
+    const endpoint =
+      `https://api.cloudflare.com/client/v4/accounts/` +
+      `${CLOUDFLARE_ACCOUNT_ID}/ai/run/${CLOUDFLARE_MODEL}`;
+
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${CLOUDFLARE_API_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        prompt:
+          prompt +
+          "\n\nIMPORTANT: Return only valid JSON. Do not include Markdown or explanations.",
+        max_tokens: numPredict,
+        temperature: 0.2,
+      }),
+      signal: controller.signal,
+      cache: "no-store",
+    });
+
+    const data = await response.json();
+
+    if (!response.ok || data?.success === false) {
+      const message =
+        data?.errors?.map((item: any) => item.message).join(", ") ||
+        "Cloudflare AI request failed.";
+
+      throw new Error(`Cloudflare AI error: ${message}`);
+    }
+
+    const raw =
+      data?.result?.response ||
+      data?.result?.output ||
+      "";
+
+    if (typeof raw !== "string" || !raw.trim()) {
+      throw new Error("Cloudflare AI returned an empty response.");
+    }
+
+    return parseAIJson(raw.trim());
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+// --------------------------------------------------
+// AI PROVIDER SELECTION
+// --------------------------------------------------
+
+async function askAI(prompt: string, numPredict = 1600) {
+  // On Vercel, use hosted AI. Vercel cannot access
+  // Ollama running on your personal computer.
+  if (process.env.NODE_ENV === "production") {
+    return askCloudflare(prompt, numPredict);
+  }
+
+  // Locally, try Ollama first.
+  try {
+    return await askOllama(prompt, numPredict);
+  } catch (ollamaError) {
+    console.warn(
+      "Local Ollama unavailable. Trying Cloudflare AI.",
+      ollamaError
+    );
+
+    // If Cloudflare credentials are configured locally,
+    // use Cloudflare as a backup.
+    if (CLOUDFLARE_ACCOUNT_ID && CLOUDFLARE_API_TOKEN) {
+      return askCloudflare(prompt, numPredict);
+    }
+
+    throw ollamaError;
+  }
+}
+
+// --------------------------------------------------
+// HELPERS
+// --------------------------------------------------
+
 function normalize(value: unknown): string {
   return String(value ?? "")
     .toLowerCase()
     .replace(/[^a-z0-9.+#]/g, "");
-}
-
-function findProfileValue(
-  profile: Record<string, any>,
-  possibleKeys: string[]
-): unknown {
-  for (const key of possibleKeys) {
-    const value = profile[key];
-
-    if (
-      value !== undefined &&
-      value !== null &&
-      String(value).trim() !== ""
-    ) {
-      return value;
-    }
-  }
-
-  return undefined;
 }
 
 function extractNumber(value: unknown): number | null {
@@ -221,7 +322,7 @@ Return exactly this JSON structure:
 }
 `;
 
-  const resume = await askOllama(prompt, 1200);
+  const resume = await askAI(prompt, 1200);
 
   if (
     !resume ||
@@ -276,12 +377,15 @@ Return exactly this JSON structure:
   return NextResponse.json({
     success: true,
     resume: cleanedResume,
-    model: OLLAMA_MODEL,
+    model:
+      process.env.NODE_ENV === "production"
+        ? CLOUDFLARE_MODEL
+        : OLLAMA_MODEL,
   });
 }
 
 // --------------------------------------------------
-// NEW: JOB REQUIREMENT EXTRACTION
+// JOB REQUIREMENT EXTRACTION
 // --------------------------------------------------
 
 async function checkJobEligibility(body: any) {
@@ -310,7 +414,8 @@ async function checkJobEligibility(body: any) {
     return NextResponse.json(
       {
         success: false,
-        error: "Job description is too long. Please keep it under 20,000 characters.",
+        error:
+          "Job description is too long. Please keep it under 20,000 characters.",
       },
       { status: 400 }
     );
@@ -365,7 +470,7 @@ Rules:
 - Use empty arrays and null for requirements not mentioned.
 `;
 
-  const requirements = await askOllama(prompt, 1200);
+  const requirements = await askAI(prompt, 1200);
 
   if (!requirements || typeof requirements !== "object") {
     throw new Error("Unable to understand the job requirements.");
@@ -706,7 +811,7 @@ Rules:
     }
   }
 
-  // Other compulsory requirements must be confirmed by the student.
+  // Other compulsory requirements
   const otherRequirements = Array.isArray(
     requirements.other_mandatory_requirements
   )
@@ -778,7 +883,10 @@ Rules:
     notes: Array.isArray(requirements.notes)
       ? requirements.notes
       : [],
-    model: OLLAMA_MODEL,
+    model:
+      process.env.NODE_ENV === "production"
+        ? CLOUDFLARE_MODEL
+        : OLLAMA_MODEL,
   });
 }
 
@@ -794,9 +902,7 @@ export async function POST(req: Request) {
       return await checkJobEligibility(body);
     }
 
-    // Default action preserves existing resume generation.
     return await generateResume(body);
-
   } catch (error: any) {
     console.error("Resume API error:", error);
 
