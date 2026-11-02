@@ -1,5 +1,9 @@
+
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+
+
+export const maxDuration = 120;
 
 type PortfolioProject = {
   title: string;
@@ -49,12 +53,6 @@ const OLLAMA_MODEL =
   process.env.OLLAMA_MODEL ||
   "qwen2.5:3b";
 
-/*
- * Current Cloudflare Workers AI model.
- *
- * IMPORTANT:
- * @cf/meta/llama-3.1-8b-instruct was deprecated.
- */
 const CLOUDFLARE_MODEL =
   process.env.CLOUDFLARE_MODEL ||
   "@cf/meta/llama-3.2-3b-instruct";
@@ -64,6 +62,12 @@ const CLOUDFLARE_ACCOUNT_ID =
 
 const CLOUDFLARE_API_TOKEN =
   process.env.CLOUDFLARE_API_TOKEN || "";
+
+/*
+ * ---------------------------------------------------------
+ * SUPABASE
+ * ---------------------------------------------------------
+ */
 
 function getSupabaseAdmin() {
   const supabaseUrl =
@@ -84,6 +88,12 @@ function getSupabaseAdmin() {
   );
 }
 
+/*
+ * ---------------------------------------------------------
+ * JSON HELPERS
+ * ---------------------------------------------------------
+ */
+
 function cleanJsonText(text: string) {
   let cleaned = String(text || "").trim();
 
@@ -93,11 +103,8 @@ function cleanJsonText(text: string) {
     .replace(/\s*```$/i, "")
     .trim();
 
-  const firstBrace =
-    cleaned.indexOf("{");
-
-  const lastBrace =
-    cleaned.lastIndexOf("}");
+  const firstBrace = cleaned.indexOf("{");
+  const lastBrace = cleaned.lastIndexOf("}");
 
   if (
     firstBrace !== -1 &&
@@ -119,9 +126,7 @@ function safeArray(value: unknown): string[] {
   }
 
   return value
-    .map((item) =>
-      String(item ?? "").trim()
-    )
+    .map((item) => String(item ?? "").trim())
     .filter(Boolean);
 }
 
@@ -137,10 +142,7 @@ function safeNumber(
 
   return Math.max(
     0,
-    Math.min(
-      100,
-      Math.round(number)
-    )
+    Math.min(100, Math.round(number))
   );
 }
 
@@ -157,8 +159,7 @@ function safeString(value: unknown) {
 async function askOllama(
   prompt: string
 ): Promise<string> {
-  const controller =
-    new AbortController();
+  const controller = new AbortController();
 
   const timeout = setTimeout(
     () => controller.abort(),
@@ -166,48 +167,42 @@ async function askOllama(
   );
 
   try {
-    const response =
-      await fetch(
-        OLLAMA_URL,
-        {
-          method: "POST",
+    const response = await fetch(
+      OLLAMA_URL,
+      {
+        method: "POST",
 
-          headers: {
-            "Content-Type":
-              "application/json",
+        headers: {
+          "Content-Type": "application/json",
+        },
+
+        body: JSON.stringify({
+          model: OLLAMA_MODEL,
+          prompt,
+          stream: false,
+          keep_alive: "10m",
+
+          options: {
+            temperature: 0.2,
+            num_predict: 4000,
+            num_ctx: 8192,
           },
+        }),
 
-          body: JSON.stringify({
-            model: OLLAMA_MODEL,
-            prompt,
-            stream: false,
-            keep_alive: "10m",
-
-            options: {
-              temperature: 0.2,
-              num_predict: 4000,
-              num_ctx: 8192,
-            },
-          }),
-
-          signal:
-            controller.signal,
-
-          cache: "no-store",
-        }
-      );
+        signal: controller.signal,
+        cache: "no-store",
+      }
+    );
 
     if (!response.ok) {
-      const details =
-        await response.text();
+      const details = await response.text();
 
       throw new Error(
         `Ollama error ${response.status}: ${details}`
       );
     }
 
-    const data =
-      await response.json();
+    const data = await response.json();
 
     const reply =
       typeof data?.response === "string"
@@ -247,8 +242,7 @@ async function askCloudflare(
   const endpoint =
     `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/ai/run/${CLOUDFLARE_MODEL}`;
 
-  const controller =
-    new AbortController();
+  const controller = new AbortController();
 
   const timeout = setTimeout(
     () => controller.abort(),
@@ -256,46 +250,39 @@ async function askCloudflare(
   );
 
   try {
-    const response =
-      await fetch(
-        endpoint,
-        {
-          method: "POST",
+    const response = await fetch(
+      endpoint,
+      {
+        method: "POST",
 
-          headers: {
-            "Content-Type":
-              "application/json",
+        headers: {
+          "Content-Type": "application/json",
 
-            Authorization:
-              `Bearer ${CLOUDFLARE_API_TOKEN}`,
-          },
+          Authorization:
+            `Bearer ${CLOUDFLARE_API_TOKEN}`,
+        },
 
-          body: JSON.stringify({
-            prompt,
+        /*
+         * IMPORTANT:
+         * JSON Mode has been removed because the
+         * selected model does not list support for it.
+         *
+         * The prompt itself requests valid JSON.
+         * cleanJsonText() handles common code fences.
+         */
 
-            max_tokens: 4000,
+        body: JSON.stringify({
+          prompt,
+          max_tokens: 4000,
+          temperature: 0.2,
+        }),
 
-            temperature: 0.2,
+        signal: controller.signal,
+        cache: "no-store",
+      }
+    );
 
-            /*
-             * Ask Cloudflare for JSON directly.
-             * This makes the portfolio review much
-             * more reliable than asking for plain text.
-             */
-            response_format: {
-              type: "json_object",
-            },
-          }),
-
-          signal:
-            controller.signal,
-
-          cache: "no-store",
-        }
-      );
-
-    const rawText =
-      await response.text();
+    const rawText = await response.text();
 
     if (!response.ok) {
       throw new Error(
@@ -318,44 +305,26 @@ async function askCloudflare(
       );
     }
 
-    /*
-     * Standard Workers AI response:
-     *
-     * {
-     *   success: true,
-     *   result: {
-     *     response: "..."
-     *   }
-     * }
-     */
-
     let reply = "";
 
     if (
-      typeof data?.result?.response ===
-      "string"
+      typeof data?.result?.response === "string"
     ) {
-      reply =
-        data.result.response.trim();
+      reply = data.result.response.trim();
     }
 
-    /*
-     * Additional compatibility handling.
-     */
     if (
       !reply &&
       typeof data?.result === "string"
     ) {
-      reply =
-        data.result.trim();
+      reply = data.result.trim();
     }
 
     if (
       !reply &&
       typeof data?.response === "string"
     ) {
-      reply =
-        data.response.trim();
+      reply = data.response.trim();
     }
 
     if (!reply) {
@@ -388,27 +357,19 @@ async function askCloudflare(
  * ---------------------------------------------------------
  */
 
-async function askAI(
-  prompt: string
-) {
-  if (
-    process.env.NODE_ENV ===
-    "production"
-  ) {
-    const response =
-      await askCloudflare(prompt);
+async function askAI(prompt: string) {
+  if (process.env.NODE_ENV === "production") {
+    const response = await askCloudflare(prompt);
 
     return {
       response,
       provider: "cloudflare",
-      model:
-        CLOUDFLARE_MODEL,
+      model: CLOUDFLARE_MODEL,
     };
   }
 
   try {
-    const response =
-      await askOllama(prompt);
+    const response = await askOllama(prompt);
 
     return {
       response,
@@ -425,14 +386,16 @@ async function askAI(
       CLOUDFLARE_ACCOUNT_ID &&
       CLOUDFLARE_API_TOKEN
     ) {
-      const response =
-        await askCloudflare(prompt);
+      console.log(
+        "Trying Cloudflare AI as local fallback..."
+      );
+
+      const response = await askCloudflare(prompt);
 
       return {
         response,
         provider: "cloudflare",
-        model:
-          CLOUDFLARE_MODEL,
+        model: CLOUDFLARE_MODEL,
       };
     }
 
@@ -442,16 +405,13 @@ async function askAI(
 
 /*
  * ---------------------------------------------------------
- * POST
+ * POST API
  * ---------------------------------------------------------
  */
 
-export async function POST(
-  request: NextRequest
-) {
+export async function POST(request: NextRequest) {
   try {
-    const body =
-      await request.json();
+    const body = await request.json();
 
     const {
       portfolio,
@@ -466,8 +426,7 @@ export async function POST(
     if (!portfolio) {
       return NextResponse.json(
         {
-          error:
-            "Portfolio data is required.",
+          error: "Portfolio data is required.",
         },
         {
           status: 400,
@@ -481,8 +440,7 @@ export async function POST(
      * -------------------------------------------------------
      */
 
-    const supabase =
-      getSupabaseAdmin();
+    const supabase = getSupabaseAdmin();
 
     /*
      * -------------------------------------------------------
@@ -491,19 +449,12 @@ export async function POST(
      */
 
     const authHeader =
-      request.headers.get(
-        "authorization"
-      );
+      request.headers.get("authorization");
 
-    if (
-      !authHeader?.startsWith(
-        "Bearer "
-      )
-    ) {
+    if (!authHeader?.startsWith("Bearer ")) {
       return NextResponse.json(
         {
-          error:
-            "Authentication required.",
+          error: "Authentication required.",
         },
         {
           status: 401,
@@ -511,27 +462,19 @@ export async function POST(
       );
     }
 
-    const accessToken =
-      authHeader
-        .replace("Bearer ", "")
-        .trim();
+    const accessToken = authHeader
+      .replace("Bearer ", "")
+      .trim();
 
     const {
       data: { user },
       error: authError,
-    } =
-      await supabase.auth.getUser(
-        accessToken
-      );
+    } = await supabase.auth.getUser(accessToken);
 
-    if (
-      authError ||
-      !user
-    ) {
+    if (authError || !user) {
       return NextResponse.json(
         {
-          error:
-            "Invalid or expired session.",
+          error: "Invalid or expired session.",
         },
         {
           status: 401,
@@ -546,52 +489,31 @@ export async function POST(
      */
 
     const safePortfolio: Portfolio = {
-      name: safeString(
-        portfolio.name
-      ),
+      name: safeString(portfolio.name),
 
-      education: safeString(
-        portfolio.education
-      ),
+      education: safeString(portfolio.education),
 
-      career_goal: safeString(
-        portfolio.career_goal
-      ),
+      career_goal: safeString(portfolio.career_goal),
 
-      about: safeString(
-        portfolio.about
-      ),
+      about: safeString(portfolio.about),
 
-      skills: safeString(
-        portfolio.skills
-      ),
+      skills: safeString(portfolio.skills),
 
-      projects:
-        Array.isArray(
-          portfolio.projects
-        )
-          ? portfolio.projects.map(
-              (project) => ({
-                title: safeString(
-                  project?.title
-                ),
+      projects: Array.isArray(portfolio.projects)
+        ? portfolio.projects.map((project) => ({
+            title: safeString(project?.title),
 
-                description:
-                  safeString(
-                    project?.description
-                  ),
+            description: safeString(
+              project?.description
+            ),
 
-                technologies:
-                  safeString(
-                    project?.technologies
-                  ),
+            technologies: safeString(
+              project?.technologies
+            ),
 
-                link: safeString(
-                  project?.link
-                ),
-              })
-            )
-          : [],
+            link: safeString(project?.link),
+          }))
+        : [],
     };
 
     /*
@@ -600,32 +522,22 @@ export async function POST(
      * -------------------------------------------------------
      */
 
-    const safeCourses:
-      CourseProgress[] =
+    const safeCourses: CourseProgress[] =
       Array.isArray(courses)
-        ? courses.map(
-            (course) => ({
-              skill: safeString(
-                course?.skill
-              ),
+        ? courses.map((course) => ({
+            skill: safeString(course?.skill),
 
-              completed_lessons:
-                course?.completed_lessons ??
-                0,
+            completed_lessons:
+              course?.completed_lessons ?? 0,
 
-              current_week:
-                Number(
-                  course?.current_week ??
-                    0
-                ),
+            current_week: Number(
+              course?.current_week ?? 0
+            ),
 
-              current_lesson:
-                Number(
-                  course?.current_lesson ??
-                    0
-                ),
-            })
-          )
+            current_lesson: Number(
+              course?.current_lesson ?? 0
+            ),
+          }))
         : [];
 
     /*
@@ -634,19 +546,16 @@ export async function POST(
      * -------------------------------------------------------
      */
 
-    const requestedCareer =
-      safeString(
-        selectedCareer
-      );
+    const requestedCareer = safeString(
+      selectedCareer
+    );
 
-    const fallbackCareer =
-      safeString(
-        safePortfolio.career_goal
-      );
+    const fallbackCareer = safeString(
+      safePortfolio.career_goal
+    );
 
     const targetCareer =
-      requestedCareer ||
-      fallbackCareer;
+      requestedCareer || fallbackCareer;
 
     if (!targetCareer) {
       return NextResponse.json(
@@ -671,17 +580,55 @@ export async function POST(
      * -------------------------------------------------------
      */
 
-    let career:
-      | Career
-      | null = null;
+    let career: Career | null = null;
 
     const {
       data: exactCareer,
       error: exactCareerError,
     } = await supabase
       .from("careers")
-      .select(
-        `
+      .select(`
+        id,
+        title,
+        category,
+        description,
+        daily_work,
+        beginner_skills,
+        advanced_skills,
+        learning_path,
+        project_ideas,
+        suitable_study_types,
+        suitable_branches,
+        certificate_guidance,
+        interview_topics,
+        internship_guidance
+      `)
+      .ilike("title", targetCareer)
+      .limit(1)
+      .maybeSingle();
+
+    if (exactCareerError) {
+      console.error(
+        "Exact career lookup error:",
+        exactCareerError
+      );
+    }
+
+    if (exactCareer) {
+      career = exactCareer as Career;
+    }
+
+    /*
+     * Broader career search.
+     */
+
+    if (!career) {
+      const {
+        data: careerList,
+        error: careerSearchError,
+      } = await supabase
+        .from("careers")
+        .select(`
           id,
           title,
           category,
@@ -696,60 +643,8 @@ export async function POST(
           certificate_guidance,
           interview_topics,
           internship_guidance
-        `
-      )
-      .ilike(
-        "title",
-        targetCareer
-      )
-      .limit(1)
-      .maybeSingle();
-
-    if (exactCareerError) {
-      console.error(
-        "Exact career lookup error:",
-        exactCareerError
-      );
-    }
-
-    if (exactCareer) {
-      career =
-        exactCareer as Career;
-    }
-
-    /*
-     * Broader career search.
-     */
-
-    if (!career) {
-      const {
-        data: careerList,
-        error:
-          careerSearchError,
-      } = await supabase
-        .from("careers")
-        .select(
-          `
-            id,
-            title,
-            category,
-            description,
-            daily_work,
-            beginner_skills,
-            advanced_skills,
-            learning_path,
-            project_ideas,
-            suitable_study_types,
-            suitable_branches,
-            certificate_guidance,
-            interview_topics,
-            internship_guidance
-          `
-        )
-        .ilike(
-          "title",
-          `%${targetCareer}%`
-        )
+        `)
+        .ilike("title", `%${targetCareer}%`)
         .limit(1);
 
       if (careerSearchError) {
@@ -759,12 +654,8 @@ export async function POST(
         );
       }
 
-      if (
-        careerList &&
-        careerList.length > 0
-      ) {
-        career =
-          careerList[0] as Career;
+      if (careerList && careerList.length > 0) {
+        career = careerList[0] as Career;
       }
     }
 
@@ -774,37 +665,29 @@ export async function POST(
      * -------------------------------------------------------
      */
 
-    const careerDataForAI =
-      career
-        ? {
-            id: career.id,
-            title: career.title,
-            category:
-              career.category,
-            description:
-              career.description,
-            daily_work:
-              career.daily_work,
-            beginner_skills:
-              career.beginner_skills,
-            advanced_skills:
-              career.advanced_skills,
-            learning_path:
-              career.learning_path,
-            project_ideas:
-              career.project_ideas,
-            suitable_study_types:
-              career.suitable_study_types,
-            suitable_branches:
-              career.suitable_branches,
-            certificate_guidance:
-              career.certificate_guidance,
-            interview_topics:
-              career.interview_topics,
-            internship_guidance:
-              career.internship_guidance,
-          }
-        : null;
+    const careerDataForAI = career
+      ? {
+          id: career.id,
+          title: career.title,
+          category: career.category,
+          description: career.description,
+          daily_work: career.daily_work,
+          beginner_skills: career.beginner_skills,
+          advanced_skills: career.advanced_skills,
+          learning_path: career.learning_path,
+          project_ideas: career.project_ideas,
+          suitable_study_types:
+            career.suitable_study_types,
+          suitable_branches:
+            career.suitable_branches,
+          certificate_guidance:
+            career.certificate_guidance,
+          interview_topics:
+            career.interview_topics,
+          internship_guidance:
+            career.internship_guidance,
+        }
+      : null;
 
     /*
      * -------------------------------------------------------
@@ -935,11 +818,7 @@ Do not return code fences.
     const userPrompt = `
 SELECTED CAREER:
 
-${JSON.stringify(
-  careerDataForAI,
-  null,
-  2
-)}
+${JSON.stringify(careerDataForAI, null, 2)}
 
 IMPORTANT:
 
@@ -953,43 +832,29 @@ project relevance, and action planning.
 
 STUDENT PORTFOLIO:
 
-${JSON.stringify(
-  safePortfolio,
-  null,
-  2
-)}
+${JSON.stringify(safePortfolio, null, 2)}
 
 COURSE / LEARNING PROGRESS:
 
-${JSON.stringify(
-  safeCourses,
-  null,
-  2
-)}
+${JSON.stringify(safeCourses, null, 2)}
 
 Return exactly this JSON structure:
 
 {
   "summary": "Short overall assessment",
-
   "score": 0,
-
   "strengths": [
     "strength"
   ],
-
   "suggestions": [
     "specific improvement"
   ],
-
   "skillMatches": [
     "skill that matches the selected career"
   ],
-
   "missingSkills": [
     "skill the student should learn"
   ],
-
   "careerAlignment": {
     "fitSummary": "Explain fit specifically for the selected career",
     "matchedAreas": [
@@ -999,7 +864,6 @@ Return exactly this JSON structure:
       "career-specific gap"
     ]
   },
-
   "learningProgress": {
     "summary": "Learning progress summary",
     "usefulLearning": [
@@ -1009,7 +873,6 @@ Return exactly this JSON structure:
       "next learning focus"
     ]
   },
-
   "projectResults": [
     {
       "title": "Project title",
@@ -1028,7 +891,6 @@ Return exactly this JSON structure:
       "evidenceQuality": "Evidence quality"
     }
   ],
-
   "actionPlan": [
     {
       "priority": "High",
@@ -1056,21 +918,24 @@ RULES:
      * -------------------------------------------------------
      */
 
-    const aiResult =
-      await askAI(
-        systemPrompt +
-          "\n\n" +
-          userPrompt
-      );
+    console.log(
+      "Starting AI portfolio review...",
+      {
+        career: targetCareer,
+        environment: process.env.NODE_ENV,
+      }
+    );
 
-    const content =
-      aiResult.response;
+    const aiResult = await askAI(
+      systemPrompt + "\n\n" + userPrompt
+    );
+
+    const content = aiResult.response;
 
     if (!content) {
       return NextResponse.json(
         {
-          error:
-            "AI did not return a review.",
+          error: "AI did not return a review.",
         },
         {
           status: 502,
@@ -1087,13 +952,8 @@ RULES:
     let result: any;
 
     try {
-      const cleaned =
-        cleanJsonText(
-          content
-        );
-
-      result =
-        JSON.parse(cleaned);
+      const cleaned = cleanJsonText(content);
+      result = JSON.parse(cleaned);
     } catch (parseError) {
       console.error(
         "AI JSON parse error:",
@@ -1109,10 +969,9 @@ RULES:
         {
           error:
             "AI returned an invalid review format.",
-          provider:
-            aiResult.provider,
-          model:
-            aiResult.model,
+
+          provider: aiResult.provider,
+          model: aiResult.model,
         },
         {
           status: 502,
@@ -1126,12 +985,11 @@ RULES:
      * -------------------------------------------------------
      */
 
-    const aiProjects =
-      Array.isArray(
-        result?.projectResults
-      )
-        ? result.projectResults
-        : [];
+    const aiProjects = Array.isArray(
+      result?.projectResults
+    )
+      ? result.projectResults
+      : [];
 
     const projectResults =
       safePortfolio.projects.map(
@@ -1140,68 +998,53 @@ RULES:
             aiProjects[index] ||
             aiProjects.find(
               (item: any) =>
-                safeString(
-                  item?.title
-                ).toLowerCase() ===
-                project.title
-                  .toLowerCase()
+                safeString(item?.title).toLowerCase() ===
+                project.title.toLowerCase()
             ) ||
             {};
 
           return {
             title:
-              safeString(
-                aiProject.title
-              ) ||
+              safeString(aiProject.title) ||
               project.title ||
-              `Project ${
-                index + 1
-              }`,
+              `Project ${index + 1}`,
 
             score: safeNumber(
               aiProject.score,
               0
             ),
 
-            strengths:
-              safeArray(
-                aiProject.strengths
-              ),
+            strengths: safeArray(
+              aiProject.strengths
+            ),
 
-            suggestions:
-              safeArray(
-                aiProject.suggestions
-              ),
+            suggestions: safeArray(
+              aiProject.suggestions
+            ),
 
-            careerRelevance:
-              safeString(
-                aiProject.careerRelevance
-              ),
+            careerRelevance: safeString(
+              aiProject.careerRelevance
+            ),
 
-            problemClarity:
-              safeString(
-                aiProject.problemClarity
-              ),
+            problemClarity: safeString(
+              aiProject.problemClarity
+            ),
 
-            solutionClarity:
-              safeString(
-                aiProject.solutionClarity
-              ),
+            solutionClarity: safeString(
+              aiProject.solutionClarity
+            ),
 
-            technologyAssessment:
-              safeString(
-                aiProject.technologyAssessment
-              ),
+            technologyAssessment: safeString(
+              aiProject.technologyAssessment
+            ),
 
-            contributionEvidence:
-              safeString(
-                aiProject.contributionEvidence
-              ),
+            contributionEvidence: safeString(
+              aiProject.contributionEvidence
+            ),
 
-            evidenceQuality:
-              safeString(
-                aiProject.evidenceQuality
-              ),
+            evidenceQuality: safeString(
+              aiProject.evidenceQuality
+            ),
           };
         }
       );
@@ -1213,23 +1056,17 @@ RULES:
      */
 
     const careerAlignment = {
-      fitSummary:
-        safeString(
-          result?.careerAlignment
-            ?.fitSummary
-        ),
+      fitSummary: safeString(
+        result?.careerAlignment?.fitSummary
+      ),
 
-      matchedAreas:
-        safeArray(
-          result?.careerAlignment
-            ?.matchedAreas
-        ),
+      matchedAreas: safeArray(
+        result?.careerAlignment?.matchedAreas
+      ),
 
-      gaps:
-        safeArray(
-          result?.careerAlignment
-            ?.gaps
-        ),
+      gaps: safeArray(
+        result?.careerAlignment?.gaps
+      ),
     };
 
     /*
@@ -1239,23 +1076,17 @@ RULES:
      */
 
     const learningProgress = {
-      summary:
-        safeString(
-          result?.learningProgress
-            ?.summary
-        ),
+      summary: safeString(
+        result?.learningProgress?.summary
+      ),
 
-      usefulLearning:
-        safeArray(
-          result?.learningProgress
-            ?.usefulLearning
-        ),
+      usefulLearning: safeArray(
+        result?.learningProgress?.usefulLearning
+      ),
 
-      nextLearningFocus:
-        safeArray(
-          result?.learningProgress
-            ?.nextLearningFocus
-        ),
+      nextLearningFocus: safeArray(
+        result?.learningProgress?.nextLearningFocus
+      ),
     };
 
     /*
@@ -1264,35 +1095,21 @@ RULES:
      * -------------------------------------------------------
      */
 
-    const actionPlan =
-      Array.isArray(
-        result?.actionPlan
-      )
-        ? result.actionPlan
-            .map(
-              (item: any) => ({
-                priority:
-                  safeString(
-                    item?.priority
-                  ) ||
-                  "Medium",
+    const actionPlan = Array.isArray(
+      result?.actionPlan
+    )
+      ? result.actionPlan
+          .map((item: any) => ({
+            priority:
+              safeString(item?.priority) ||
+              "Medium",
 
-                task:
-                  safeString(
-                    item?.task
-                  ),
+            task: safeString(item?.task),
 
-                reason:
-                  safeString(
-                    item?.reason
-                  ),
-              })
-            )
-            .filter(
-              (item: any) =>
-                item.task
-            )
-        : [];
+            reason: safeString(item?.reason),
+          }))
+          .filter((item: any) => item.task)
+      : [];
 
     /*
      * -------------------------------------------------------
@@ -1301,35 +1118,17 @@ RULES:
      */
 
     const finalResult = {
-      score: safeNumber(
-        result?.score,
-        0
-      ),
+      score: safeNumber(result?.score, 0),
 
-      summary:
-        safeString(
-          result?.summary
-        ),
+      summary: safeString(result?.summary),
 
-      strengths:
-        safeArray(
-          result?.strengths
-        ),
+      strengths: safeArray(result?.strengths),
 
-      suggestions:
-        safeArray(
-          result?.suggestions
-        ),
+      suggestions: safeArray(result?.suggestions),
 
-      skillMatches:
-        safeArray(
-          result?.skillMatches
-        ),
+      skillMatches: safeArray(result?.skillMatches),
 
-      missingSkills:
-        safeArray(
-          result?.missingSkills
-        ),
+      missingSkills: safeArray(result?.missingSkills),
 
       projectResults,
 
@@ -1343,8 +1142,7 @@ RULES:
         ? {
             id: career.id,
             title: career.title,
-            category:
-              career.category,
+            category: career.category,
           }
         : {
             id: null,
@@ -1354,16 +1152,20 @@ RULES:
 
       source: "ai",
 
-      model:
-        aiResult.model,
+      model: aiResult.model,
 
-      provider:
-        aiResult.provider,
+      provider: aiResult.provider,
     };
 
-    return NextResponse.json(
-      finalResult
+    console.log(
+      "AI portfolio review completed successfully.",
+      {
+        provider: aiResult.provider,
+        model: aiResult.model,
+      }
     );
+
+    return NextResponse.json(finalResult);
   } catch (error) {
     console.error(
       "Portfolio review error:",
@@ -1373,12 +1175,11 @@ RULES:
     const message =
       error instanceof Error
         ? error.message
-        : "";
+        : "Unknown server error.";
 
     const isTimeout =
       error instanceof Error &&
-      error.name ===
-        "AbortError";
+      error.name === "AbortError";
 
     return NextResponse.json(
       {
@@ -1386,16 +1187,19 @@ RULES:
           ? "AI portfolio review timed out. Please try again."
           : "Unable to generate portfolio review.",
 
+        /*
+         * Development mode returns the actual error
+         * so we can identify the remaining problem.
+         *
+         * Production does not expose internal details.
+         */
         details:
-          process.env.NODE_ENV ===
-          "development"
+          process.env.NODE_ENV === "development"
             ? message
             : undefined,
       },
       {
-        status: isTimeout
-          ? 504
-          : 500,
+        status: isTimeout ? 504 : 500,
       }
     );
   }
