@@ -1,4 +1,3 @@
-
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
@@ -50,15 +49,21 @@ const OLLAMA_MODEL =
   process.env.OLLAMA_MODEL ||
   "qwen2.5:3b";
 
+/*
+ * Current Cloudflare Workers AI model.
+ *
+ * IMPORTANT:
+ * @cf/meta/llama-3.1-8b-instruct was deprecated.
+ */
+const CLOUDFLARE_MODEL =
+  process.env.CLOUDFLARE_MODEL ||
+  "@cf/meta/llama-3.2-3b-instruct";
+
 const CLOUDFLARE_ACCOUNT_ID =
   process.env.CLOUDFLARE_ACCOUNT_ID || "";
 
 const CLOUDFLARE_API_TOKEN =
   process.env.CLOUDFLARE_API_TOKEN || "";
-
-const CLOUDFLARE_MODEL =
-  process.env.CLOUDFLARE_MODEL ||
-  "@cf/meta/llama-3.1-8b-instruct";
 
 function getSupabaseAdmin() {
   const supabaseUrl =
@@ -205,8 +210,7 @@ async function askOllama(
       await response.json();
 
     const reply =
-      typeof data?.response ===
-      "string"
+      typeof data?.response === "string"
         ? data.response.trim()
         : "";
 
@@ -272,6 +276,15 @@ async function askCloudflare(
             max_tokens: 4000,
 
             temperature: 0.2,
+
+            /*
+             * Ask Cloudflare for JSON directly.
+             * This makes the portfolio review much
+             * more reliable than asking for plain text.
+             */
+            response_format: {
+              type: "json_object",
+            },
           }),
 
           signal:
@@ -281,32 +294,73 @@ async function askCloudflare(
         }
       );
 
-    if (!response.ok) {
-      const details =
-        await response.text();
+    const rawText =
+      await response.text();
 
+    if (!response.ok) {
       throw new Error(
-        `Cloudflare AI error ${response.status}: ${details}`
+        `Cloudflare AI error ${response.status}: ${rawText}`
       );
     }
 
-    const data =
-      await response.json();
+    let data: any;
+
+    try {
+      data = JSON.parse(rawText);
+    } catch {
+      console.error(
+        "Cloudflare returned non-JSON HTTP response:",
+        rawText
+      );
+
+      throw new Error(
+        "Cloudflare AI returned an invalid HTTP response."
+      );
+    }
 
     /*
-     * Cloudflare can return the generated
-     * text in result.response.
+     * Standard Workers AI response:
+     *
+     * {
+     *   success: true,
+     *   result: {
+     *     response: "..."
+     *   }
+     * }
      */
 
-    const reply =
+    let reply = "";
+
+    if (
       typeof data?.result?.response ===
       "string"
-        ? data.result.response.trim()
-        : "";
+    ) {
+      reply =
+        data.result.response.trim();
+    }
+
+    /*
+     * Additional compatibility handling.
+     */
+    if (
+      !reply &&
+      typeof data?.result === "string"
+    ) {
+      reply =
+        data.result.trim();
+    }
+
+    if (
+      !reply &&
+      typeof data?.response === "string"
+    ) {
+      reply =
+        data.response.trim();
+    }
 
     if (!reply) {
       console.error(
-        "Unexpected Cloudflare response:",
+        "Unexpected Cloudflare AI response:",
         data
       );
 
@@ -342,9 +396,7 @@ async function askAI(
     "production"
   ) {
     const response =
-      await askCloudflare(
-        prompt
-      );
+      await askCloudflare(prompt);
 
     return {
       response,
@@ -369,20 +421,12 @@ async function askAI(
       ollamaError
     );
 
-    /*
-     * If Cloudflare credentials exist
-     * locally, use Cloudflare as a
-     * fallback.
-     */
-
     if (
       CLOUDFLARE_ACCOUNT_ID &&
       CLOUDFLARE_API_TOKEN
     ) {
       const response =
-        await askCloudflare(
-          prompt
-        );
+        await askCloudflare(prompt);
 
       return {
         response,
@@ -734,42 +778,29 @@ export async function POST(
       career
         ? {
             id: career.id,
-
             title: career.title,
-
             category:
               career.category,
-
             description:
               career.description,
-
             daily_work:
               career.daily_work,
-
             beginner_skills:
               career.beginner_skills,
-
             advanced_skills:
               career.advanced_skills,
-
             learning_path:
               career.learning_path,
-
             project_ideas:
               career.project_ideas,
-
             suitable_study_types:
               career.suitable_study_types,
-
             suitable_branches:
               career.suitable_branches,
-
             certificate_guidance:
               career.certificate_guidance,
-
             interview_topics:
               career.interview_topics,
-
             internship_guidance:
               career.internship_guidance,
           }

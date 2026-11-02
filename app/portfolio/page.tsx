@@ -1,3 +1,4 @@
+
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -224,12 +225,28 @@ export default function PortfolioPage() {
   const [loadingAnalysisData, setLoadingAnalysisData] = useState(false);
   const [analysis, setAnalysis] = useState<PortfolioAnalysis | null>(null);
 
+  // AI enhancement state
+  const [enhancedAbout, setEnhancedAbout] = useState("");
+  const [enhancedProjectDescriptions, setEnhancedProjectDescriptions] =
+    useState<Record<number, string>>({});
+  const [enhancingSection, setEnhancingSection] = useState("");
+
   const completedTaskIds = useMemo(
     () => parseCompletedTasks(projectProgress?.completed_tasks),
     [projectProgress]
   );
 
   const skillList = useMemo(() => splitItems(skills), [skills]);
+
+  // Split education into separate qualifications using blank lines.
+  const educationItems = useMemo(
+    () =>
+      education
+        .split(/\n\s*\n/)
+        .map((item) => item.trim())
+        .filter(Boolean),
+    [education]
+  );
 
   const requiredSkills = useMemo(
     () => getRequiredSkills(careerGoal),
@@ -396,6 +413,199 @@ export default function PortfolioPage() {
     void refreshAnalysisData();
   }, [refreshAnalysisData]);
 
+  // AI ENHANCEMENT
+  async function enhancePortfolioContent(
+    section: "about" | "project",
+    index?: number
+  ) {
+    const currentProject =
+      section === "project" && typeof index === "number"
+        ? projects[index]
+        : undefined;
+
+    const originalText =
+      section === "about"
+        ? about.trim()
+        : currentProject?.description.trim() ?? "";
+
+    if (section === "project" && !currentProject) {
+      setMessage("Project not found. Please try again.");
+      return;
+    }
+
+    if (!originalText) {
+      setMessage(
+        section === "about"
+          ? "Write something in your About section before using AI enhancement."
+          : "Write a project description before using AI enhancement."
+      );
+      return;
+    }
+
+    if (section === "project" && !currentProject?.title.trim()) {
+      setMessage("Please enter a project title before enhancing its description.");
+      return;
+    }
+
+    const requestKey =
+      section === "about" ? "about" : `project-${index}`;
+
+    try {
+      setEnhancingSection(requestKey);
+      setMessage("");
+
+      const context = JSON.stringify({
+        studentName: name,
+        education,
+        careerGoal,
+        skills: skillList,
+        section,
+        originalText,
+        project:
+          currentProject
+            ? {
+                title: currentProject.title,
+                technologies: currentProject.technologies,
+                link: currentProject.link,
+              }
+            : null,
+      });
+
+      const prompt =
+        section === "about"
+          ? `Improve the student's About Me portfolio section.
+
+Rewrite the supplied information into a polished, professional and natural introduction suitable for a student portfolio.
+
+Rules:
+- Use only the facts supplied in the context.
+- Do not invent experience, achievements, certifications, skills or projects.
+- Keep the student's original meaning.
+- Use clear, beginner-friendly professional English.
+- Mention the career goal and relevant learning interests where appropriate.
+- Write in first person.
+- Return only the improved About Me paragraph.
+- Keep it concise, around 80 to 120 words.
+
+Original About section:
+${originalText}`
+          : `Improve this student's project description for a professional portfolio.
+
+Rules:
+- Explain the project's purpose and what it does.
+- Clearly describe the implementation using only the supplied facts.
+- Mention the technologies provided in the context where relevant.
+- Do not invent features, results, users, statistics or achievements.
+- Do not claim that the project is deployed or fully working unless the supplied information says so.
+- Use clear, professional English.
+- Keep the description around 60 to 100 words.
+- Return only the improved project description.
+
+Original project description:
+${originalText}`;
+
+      const response = await fetch("/api/ai-assistant", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          message: prompt,
+          context,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok || !data.success || typeof data.reply !== "string") {
+        throw new Error(
+          typeof data.error === "string"
+            ? data.error
+            : "The AI could not enhance this section."
+        );
+      }
+
+      const suggestion = data.reply.trim();
+
+      if (!suggestion) {
+        throw new Error("The AI returned an empty suggestion.");
+      }
+
+      if (section === "about") {
+        setEnhancedAbout(suggestion);
+      } else if (typeof index === "number") {
+        setEnhancedProjectDescriptions((previous) => ({
+          ...previous,
+          [index]: suggestion,
+        }));
+      }
+
+      setMessage(
+        `AI suggestion generated successfully using ${data.provider || "AI"}. Review it before applying.`
+      );
+    } catch (error) {
+      console.error("Portfolio AI enhancement error:", error);
+      setMessage(
+        error instanceof Error
+          ? error.message
+          : "Unable to enhance this section. Please try again."
+      );
+    } finally {
+      setEnhancingSection("");
+    }
+  }
+
+  function applyEnhancedAbout() {
+    if (!enhancedAbout.trim()) return;
+
+    setAbout(enhancedAbout.trim());
+    setEnhancedAbout("");
+    setAnalysis(null);
+    setMessage(
+      "AI-enhanced About section applied. Save your portfolio to keep the changes."
+    );
+  }
+
+  function discardEnhancedAbout() {
+    setEnhancedAbout("");
+    setMessage("The suggested About section was discarded.");
+  }
+
+  function applyEnhancedProject(index: number) {
+    const suggestion = enhancedProjectDescriptions[index];
+
+    if (!suggestion?.trim()) return;
+
+    setProjects((previous) =>
+      previous.map((project, i) =>
+        i === index
+          ? { ...project, description: suggestion.trim() }
+          : project
+      )
+    );
+
+    setEnhancedProjectDescriptions((previous) => {
+      const updated = { ...previous };
+      delete updated[index];
+      return updated;
+    });
+
+    setAnalysis(null);
+    setMessage(
+      "AI-enhanced project description applied. Save your portfolio to keep the changes."
+    );
+  }
+
+  function discardEnhancedProject(index: number) {
+    setEnhancedProjectDescriptions((previous) => {
+      const updated = { ...previous };
+      delete updated[index];
+      return updated;
+    });
+
+    setMessage("The suggested project description was discarded.");
+  }
+
   function updateProject(
     index: number,
     field: keyof PortfolioProject,
@@ -406,6 +616,13 @@ export default function PortfolioPage() {
         i === index ? { ...project, [field]: value } : project
       )
     );
+
+    setEnhancedProjectDescriptions((previous) => {
+      const updated = { ...previous };
+      delete updated[index];
+      return updated;
+    });
+
     setAnalysis(null);
   }
 
@@ -548,6 +765,8 @@ export default function PortfolioPage() {
           : [{ ...EMPTY_PROJECT }]
       );
 
+      setEnhancedAbout("");
+      setEnhancedProjectDescriptions({});
       setAnalysis(null);
       setMessage("Your portfolio was loaded successfully.");
       await refreshAnalysisData();
@@ -1015,17 +1234,33 @@ export default function PortfolioPage() {
                 />
               </label>
 
-              <label className={labelClass}>
-                Education
-                <input
+              {/* MULTIPLE EDUCATION QUALIFICATIONS */}
+              <label className={`${labelClass} sm:col-span-2`}>
+                Academic Background
+
+                <textarea
                   className={inputClass}
                   value={education}
                   onChange={(event) => {
                     setEducation(event.target.value);
                     setAnalysis(null);
                   }}
-                  placeholder="e.g. B.Tech ECE"
+                  placeholder={`Bachelor of Technology (B.Tech)
+Electronics and Communication Engineering (ECE)
+Andhra Loyola Institute of Engineering and Technology
+
+Intermediate Education (12th Grade)
+Academic Score: 95%
+
+Secondary School Education (10th Grade)
+Academic Score: 85%`}
+                  rows={8}
                 />
+
+                <p className="mt-2 text-xs text-slate-400">
+                  Add each qualification separately. Leave one blank line
+                  between qualifications.
+                </p>
               </label>
 
               <label className={labelClass}>
@@ -1060,12 +1295,62 @@ export default function PortfolioPage() {
                 value={about}
                 onChange={(event) => {
                   setAbout(event.target.value);
+                  setEnhancedAbout("");
                   setAnalysis(null);
                 }}
                 placeholder="Write about your interests, learning goals, and experience..."
                 rows={4}
               />
             </label>
+
+            <button
+              type="button"
+              onClick={() => void enhancePortfolioContent("about")}
+              disabled={
+                enhancingSection !== "" ||
+                !about.trim()
+              }
+              className="mt-3 rounded-xl bg-purple-600 px-5 py-3 text-sm font-semibold hover:bg-purple-500 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {enhancingSection === "about"
+                ? "AI is improving your About section..."
+                : "✨ Improve About with AI"}
+            </button>
+
+            {enhancedAbout && (
+              <div className="mt-5 rounded-xl border border-purple-500/40 bg-purple-500/10 p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h3 className="font-semibold text-purple-200">
+                    AI-enhanced About suggestion
+                  </h3>
+                  <span className="rounded-full bg-purple-500/20 px-3 py-1 text-xs text-purple-200">
+                    Review before applying
+                  </span>
+                </div>
+
+                <p className="mt-3 whitespace-pre-wrap text-sm leading-7 text-slate-200">
+                  {enhancedAbout}
+                </p>
+
+                <div className="mt-4 flex flex-wrap gap-3">
+                  <button
+                    type="button"
+                    onClick={applyEnhancedAbout}
+                    className="rounded-lg bg-green-600 px-4 py-2 text-sm font-semibold hover:bg-green-500"
+                  >
+                    Apply suggestion
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={discardEnhancedAbout}
+                    className="rounded-lg border border-slate-600 px-4 py-2 text-sm font-semibold hover:bg-slate-800"
+                  >
+                    Discard
+                  </button>
+                </div>
+              </div>
+            )}
           </section>
 
           <section className="rounded-2xl border border-slate-800 bg-slate-900 p-5 sm:p-7">
@@ -1289,6 +1574,58 @@ export default function PortfolioPage() {
                         />
                       </label>
 
+                      <button
+                        type="button"
+                        onClick={() =>
+                          void enhancePortfolioContent("project", index)
+                        }
+                        disabled={
+                          enhancingSection !== "" ||
+                          !project.description.trim() ||
+                          !project.title.trim()
+                        }
+                        className="rounded-xl bg-purple-600 px-5 py-3 text-sm font-semibold hover:bg-purple-500 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {enhancingSection === `project-${index}`
+                          ? "AI is improving this project..."
+                          : "✨ Improve Project Description with AI"}
+                      </button>
+
+                      {enhancedProjectDescriptions[index] && (
+                        <div className="rounded-xl border border-purple-500/40 bg-purple-500/10 p-4">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <h4 className="font-semibold text-purple-200">
+                              AI-enhanced project suggestion
+                            </h4>
+                            <span className="rounded-full bg-purple-500/20 px-3 py-1 text-xs text-purple-200">
+                              Review before applying
+                            </span>
+                          </div>
+
+                          <p className="mt-3 whitespace-pre-wrap text-sm leading-7 text-slate-200">
+                            {enhancedProjectDescriptions[index]}
+                          </p>
+
+                          <div className="mt-4 flex flex-wrap gap-3">
+                            <button
+                              type="button"
+                              onClick={() => applyEnhancedProject(index)}
+                              className="rounded-lg bg-green-600 px-4 py-2 text-sm font-semibold hover:bg-green-500"
+                            >
+                              Apply suggestion
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => discardEnhancedProject(index)}
+                              className="rounded-lg border border-slate-600 px-4 py-2 text-sm font-semibold hover:bg-slate-800"
+                            >
+                              Discard
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
                       <label className={labelClass}>
                         Technologies used
                         <input
@@ -1416,6 +1753,23 @@ export default function PortfolioPage() {
                             setProjects((previous) =>
                               previous.filter((_, i) => i !== index)
                             );
+
+                            setEnhancedProjectDescriptions((previous) => {
+                              const updated: Record<number, string> = {};
+
+                              Object.entries(previous).forEach(([key, value]) => {
+                                const oldIndex = Number(key);
+
+                                if (oldIndex < index) {
+                                  updated[oldIndex] = value;
+                                } else if (oldIndex > index) {
+                                  updated[oldIndex - 1] = value;
+                                }
+                              });
+
+                              return updated;
+                            });
+
                             setAnalysis(null);
                           }}
                           className="text-sm text-red-300 hover:text-red-200"
@@ -1600,6 +1954,11 @@ export default function PortfolioPage() {
                 <p className="mt-2 text-lg text-slate-600">
                   {careerGoal.trim() || "Your Career Goal"}
                 </p>
+                {education.trim() && (
+                  <p className="mt-1 text-sm text-slate-500">
+                    {educationItems[0]?.split("\n")[0] || education}
+                  </p>
+                )}
               </div>
 
               <button
@@ -1614,19 +1973,77 @@ export default function PortfolioPage() {
             <hr className="my-6 border-slate-200" />
 
             <h3 className="text-xl font-semibold">About</h3>
-            <p className="mt-2 whitespace-pre-wrap text-slate-700">
-              {about.trim() || "Add your introduction in the portfolio form."}
+            <p className="mt-2 whitespace-pre-wrap leading-7 text-slate-700">
+              {enhancedAbout ||
+                about.trim() ||
+                "Add your introduction in the portfolio form."}
             </p>
 
-            <h3 className="mt-6 text-xl font-semibold">Education</h3>
-            <p className="mt-2 whitespace-pre-wrap text-slate-700">
-              {education.trim() || "Add your education details."}
+            {/* PROFESSIONAL EDUCATION TIMELINE */}
+            <h3 className="mt-8 text-2xl font-bold text-slate-900">
+              Education
+            </h3>
+
+            <p className="mt-2 text-sm text-slate-500">
+              My academic journey and educational background.
             </p>
+
+            {educationItems.length > 0 ? (
+              <div className="relative mt-6 space-y-5 border-l-2 border-purple-200 pl-6">
+                {educationItems.map((item, index) => {
+                  const lines = item
+                    .split("\n")
+                    .map((line) => line.trim())
+                    .filter(Boolean);
+
+                  return (
+                    <article
+                      key={index}
+                      className="relative rounded-xl border border-slate-200 bg-slate-50 p-5"
+                    >
+                      <span className="absolute -left-[34px] top-6 flex h-4 w-4 items-center justify-center rounded-full border-4 border-purple-200 bg-purple-600" />
+
+                      <p className="text-xs font-bold uppercase tracking-wider text-purple-600">
+                        Qualification {String(index + 1).padStart(2, "0")}
+                      </p>
+
+                      <h4 className="mt-2 text-lg font-bold text-slate-900">
+                        {lines[0]}
+                      </h4>
+
+                      {lines.slice(1).map((line, lineIndex) => (
+                        <p
+                          key={lineIndex}
+                          className="mt-2 text-sm leading-6 text-slate-600"
+                        >
+                          {line}
+                        </p>
+                      ))}
+                    </article>
+                  );
+                })}
+              </div>
+            ) : (
+              <p className="mt-3 text-slate-600">
+                Add your academic qualifications.
+              </p>
+            )}
 
             <h3 className="mt-6 text-xl font-semibold">Skills</h3>
-            <p className="mt-2 whitespace-pre-wrap text-slate-700">
-              {skills.trim() || "Add your skills."}
-            </p>
+            {skillList.length > 0 ? (
+              <div className="mt-3 flex flex-wrap gap-2">
+                {skillList.map((skill, index) => (
+                  <span
+                    key={`${skill}-${index}`}
+                    className="rounded-full bg-purple-100 px-4 py-2 text-sm font-medium text-purple-800"
+                  >
+                    {skill}
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <p className="mt-2 text-slate-700">Add your skills.</p>
+            )}
 
             <h3 className="mt-6 text-xl font-semibold">Career Skill Match</h3>
             <p className="mt-2 text-slate-700">
@@ -1636,36 +2053,7 @@ export default function PortfolioPage() {
               Skills to develop: {missingSkills.join(", ") || "Not identified"}
             </p>
 
-            <h3 className="mt-6 text-xl font-semibold">Learning Progress</h3>
-
-            {courseProgress.length > 0 ? (
-              <div className="mt-3 space-y-3">
-                {courseProgress.map((course, index) => (
-                  <div
-                    key={`${course.skill}-${index}`}
-                    className="rounded-xl border border-slate-200 p-4"
-                  >
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <h4 className="font-semibold">{course.skill}</h4>
-                      <span className="text-sm text-slate-600">
-                        Week {course.current_week}
-                      </span>
-                    </div>
-
-                    <p className="mt-2 text-sm text-slate-600">
-                      Completed lessons: {course.completed_lessons}
-                    </p>
-                    <p className="mt-1 text-sm text-slate-600">
-                      Current lesson: {course.current_lesson}
-                    </p>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p className="mt-2 text-slate-600">
-                No course progress available yet.
-              </p>
-            )}
+            {/* Learning Progress section remains removed from inline preview */}
 
             <h3 className="mt-6 text-xl font-semibold">Projects</h3>
 
@@ -1673,35 +2061,42 @@ export default function PortfolioPage() {
               <div className="mt-3 space-y-4">
                 {projects
                   .filter((project) => project.title.trim())
-                  .map((project, index) => (
-                    <article
-                      key={`${project.title}-${index}`}
-                      className="rounded-xl border border-slate-200 p-4"
-                    >
-                      <h4 className="text-lg font-semibold">
-                        {project.title}
-                      </h4>
+                  .map((project, index) => {
+                    const originalIndex = projects.indexOf(project);
+                    const description =
+                      enhancedProjectDescriptions[originalIndex] ||
+                      project.description;
 
-                      <p className="mt-2 whitespace-pre-wrap text-slate-700">
-                        {project.description}
-                      </p>
+                    return (
+                      <article
+                        key={`${project.title}-${index}`}
+                        className="rounded-xl border border-slate-200 p-4"
+                      >
+                        <h4 className="text-lg font-semibold">
+                          {project.title}
+                        </h4>
 
-                      <p className="mt-3 text-sm text-slate-600">
-                        Technologies: {project.technologies || "Not specified"}
-                      </p>
+                        <p className="mt-2 whitespace-pre-wrap leading-7 text-slate-700">
+                          {description}
+                        </p>
 
-                      {project.link.trim() && (
-                        <a
-                          href={project.link}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="mt-3 inline-block text-blue-700 underline"
-                        >
-                          View project
-                        </a>
-                      )}
-                    </article>
-                  ))}
+                        <p className="mt-3 text-sm text-slate-600">
+                          Technologies: {project.technologies || "Not specified"}
+                        </p>
+
+                        {project.link.trim() && (
+                          <a
+                            href={project.link}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="mt-3 inline-block text-blue-700 underline"
+                          >
+                            View project
+                          </a>
+                        )}
+                      </article>
+                    );
+                  })}
               </div>
             ) : (
               <p className="mt-2 text-slate-600">
@@ -1715,6 +2110,10 @@ export default function PortfolioPage() {
                 <p className="mt-2 text-slate-700">{email}</p>
               </>
             )}
+
+            <p className="mt-8 border-t border-slate-200 pt-4 text-center text-xs text-slate-400">
+              Portfolio generated with CareerPath
+            </p>
           </section>
         )}
       </div>

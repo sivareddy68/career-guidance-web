@@ -57,7 +57,7 @@ async function askOllama(
       keep_alive: "10m",
       options: {
         temperature: 0.4,
-        num_predict: 120,
+        num_predict: 400,
         num_ctx: 2048,
       },
     }),
@@ -108,7 +108,7 @@ async function askCloudflare(
     },
     body: JSON.stringify({
       prompt,
-      max_tokens: 120,
+      max_tokens: 400,
       temperature: 0.4,
     }),
     signal,

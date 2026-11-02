@@ -909,27 +909,27 @@ function PortfolioReviewContent() {
           "Please sign in again before reviewing your portfolio."
         );
       }
-
-      const response = await fetch("/api/portfolio-review", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${session.access_token}`,
-        },
-        signal: controller.signal,
-        body: JSON.stringify({
-          portfolio: {
-            name: portfolio.name,
-            education: portfolio.education,
-            career_goal: careerForReview,
-            about: portfolio.about,
-            skills: portfolio.skills,
-            projects: portfolio.projects,
-          },
-          courses,
-          selectedCareer: careerForReview,
-        }),
-      });
+ 
+     const response = await fetch("/api/project-review", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${session.access_token}`,
+  },
+  signal: controller.signal,
+  body: JSON.stringify({
+    portfolio: {
+      name: portfolio.name,
+      education: portfolio.education,
+      career_goal: careerForReview,
+      about: portfolio.about,
+      skills: portfolio.skills,
+      projects: portfolio.projects,
+    },
+    courses,
+    selectedCareer: careerForReview,
+  }),
+});
 
       let rawResult: unknown;
 
