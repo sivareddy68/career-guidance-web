@@ -42,8 +42,28 @@ type Career = {
   internship_guidance: string;
 };
 
+const OLLAMA_URL =
+  process.env.OLLAMA_URL ||
+  "http://127.0.0.1:11434/api/generate";
+
+const OLLAMA_MODEL =
+  process.env.OLLAMA_MODEL ||
+  "qwen2.5:3b";
+
+const CLOUDFLARE_ACCOUNT_ID =
+  process.env.CLOUDFLARE_ACCOUNT_ID || "";
+
+const CLOUDFLARE_API_TOKEN =
+  process.env.CLOUDFLARE_API_TOKEN || "";
+
+const CLOUDFLARE_MODEL =
+  process.env.CLOUDFLARE_MODEL ||
+  "@cf/meta/llama-3.1-8b-instruct";
+
 function getSupabaseAdmin() {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseUrl =
+    process.env.NEXT_PUBLIC_SUPABASE_URL;
+
   const supabaseKey =
     process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
 
@@ -60,18 +80,19 @@ function getSupabaseAdmin() {
 }
 
 function cleanJsonText(text: string) {
-  let cleaned = text.trim();
+  let cleaned = String(text || "").trim();
 
-  if (cleaned.startsWith("```")) {
-    cleaned = cleaned
-      .replace(/^```json\s*/i, "")
-      .replace(/^```\s*/i, "")
-      .replace(/\s*```$/i, "")
-      .trim();
-  }
+  cleaned = cleaned
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
 
-  const firstBrace = cleaned.indexOf("{");
-  const lastBrace = cleaned.lastIndexOf("}");
+  const firstBrace =
+    cleaned.indexOf("{");
+
+  const lastBrace =
+    cleaned.lastIndexOf("}");
 
   if (
     firstBrace !== -1 &&
@@ -122,11 +143,271 @@ function safeString(value: unknown) {
   return String(value ?? "").trim();
 }
 
+/*
+ * ---------------------------------------------------------
+ * OLLAMA
+ * ---------------------------------------------------------
+ */
+
+async function askOllama(
+  prompt: string
+): Promise<string> {
+  const controller =
+    new AbortController();
+
+  const timeout = setTimeout(
+    () => controller.abort(),
+    120000
+  );
+
+  try {
+    const response =
+      await fetch(
+        OLLAMA_URL,
+        {
+          method: "POST",
+
+          headers: {
+            "Content-Type":
+              "application/json",
+          },
+
+          body: JSON.stringify({
+            model: OLLAMA_MODEL,
+            prompt,
+            stream: false,
+            keep_alive: "10m",
+
+            options: {
+              temperature: 0.2,
+              num_predict: 4000,
+              num_ctx: 8192,
+            },
+          }),
+
+          signal:
+            controller.signal,
+
+          cache: "no-store",
+        }
+      );
+
+    if (!response.ok) {
+      const details =
+        await response.text();
+
+      throw new Error(
+        `Ollama error ${response.status}: ${details}`
+      );
+    }
+
+    const data =
+      await response.json();
+
+    const reply =
+      typeof data?.response ===
+      "string"
+        ? data.response.trim()
+        : "";
+
+    if (!reply) {
+      throw new Error(
+        "Ollama returned an empty response."
+      );
+    }
+
+    return reply;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+/*
+ * ---------------------------------------------------------
+ * CLOUDFLARE WORKERS AI
+ * ---------------------------------------------------------
+ */
+
+async function askCloudflare(
+  prompt: string
+): Promise<string> {
+  if (
+    !CLOUDFLARE_ACCOUNT_ID ||
+    !CLOUDFLARE_API_TOKEN
+  ) {
+    throw new Error(
+      "Cloudflare AI environment variables are missing."
+    );
+  }
+
+  const endpoint =
+    `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/ai/run/${CLOUDFLARE_MODEL}`;
+
+  const controller =
+    new AbortController();
+
+  const timeout = setTimeout(
+    () => controller.abort(),
+    120000
+  );
+
+  try {
+    const response =
+      await fetch(
+        endpoint,
+        {
+          method: "POST",
+
+          headers: {
+            "Content-Type":
+              "application/json",
+
+            Authorization:
+              `Bearer ${CLOUDFLARE_API_TOKEN}`,
+          },
+
+          body: JSON.stringify({
+            prompt,
+
+            max_tokens: 4000,
+
+            temperature: 0.2,
+          }),
+
+          signal:
+            controller.signal,
+
+          cache: "no-store",
+        }
+      );
+
+    if (!response.ok) {
+      const details =
+        await response.text();
+
+      throw new Error(
+        `Cloudflare AI error ${response.status}: ${details}`
+      );
+    }
+
+    const data =
+      await response.json();
+
+    /*
+     * Cloudflare can return the generated
+     * text in result.response.
+     */
+
+    const reply =
+      typeof data?.result?.response ===
+      "string"
+        ? data.result.response.trim()
+        : "";
+
+    if (!reply) {
+      console.error(
+        "Unexpected Cloudflare response:",
+        data
+      );
+
+      throw new Error(
+        "Cloudflare AI returned an unreadable response."
+      );
+    }
+
+    return reply;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+/*
+ * ---------------------------------------------------------
+ * AI PROVIDER
+ * ---------------------------------------------------------
+ *
+ * Localhost:
+ *   Ollama + Qwen
+ *
+ * Production:
+ *   Cloudflare Workers AI
+ * ---------------------------------------------------------
+ */
+
+async function askAI(
+  prompt: string
+) {
+  if (
+    process.env.NODE_ENV ===
+    "production"
+  ) {
+    const response =
+      await askCloudflare(
+        prompt
+      );
+
+    return {
+      response,
+      provider: "cloudflare",
+      model:
+        CLOUDFLARE_MODEL,
+    };
+  }
+
+  try {
+    const response =
+      await askOllama(prompt);
+
+    return {
+      response,
+      provider: "ollama",
+      model: OLLAMA_MODEL,
+    };
+  } catch (ollamaError) {
+    console.error(
+      "Local Ollama review failed:",
+      ollamaError
+    );
+
+    /*
+     * If Cloudflare credentials exist
+     * locally, use Cloudflare as a
+     * fallback.
+     */
+
+    if (
+      CLOUDFLARE_ACCOUNT_ID &&
+      CLOUDFLARE_API_TOKEN
+    ) {
+      const response =
+        await askCloudflare(
+          prompt
+        );
+
+      return {
+        response,
+        provider: "cloudflare",
+        model:
+          CLOUDFLARE_MODEL,
+      };
+    }
+
+    throw ollamaError;
+  }
+}
+
+/*
+ * ---------------------------------------------------------
+ * POST
+ * ---------------------------------------------------------
+ */
+
 export async function POST(
   request: NextRequest
 ) {
   try {
-    const body = await request.json();
+    const body =
+      await request.json();
 
     const {
       portfolio,
@@ -150,32 +431,19 @@ export async function POST(
       );
     }
 
-    const groqApiKey =
-      process.env.GROQ_API_KEY;
-
-    const groqModel =
-      process.env.GROQ_MODEL ||
-      "openai/gpt-oss-20b";
-
-    if (!groqApiKey) {
-      return NextResponse.json(
-        {
-          error:
-            "GROQ_API_KEY is missing.",
-        },
-        {
-          status: 500,
-        }
-      );
-    }
+    /*
+     * -------------------------------------------------------
+     * SUPABASE
+     * -------------------------------------------------------
+     */
 
     const supabase =
       getSupabaseAdmin();
 
     /*
-     * ---------------------------------------------------------
+     * -------------------------------------------------------
      * AUTHENTICATION
-     * ---------------------------------------------------------
+     * -------------------------------------------------------
      */
 
     const authHeader =
@@ -228,9 +496,9 @@ export async function POST(
     }
 
     /*
-     * ---------------------------------------------------------
+     * -------------------------------------------------------
      * CLEAN PORTFOLIO
-     * ---------------------------------------------------------
+     * -------------------------------------------------------
      */
 
     const safePortfolio: Portfolio = {
@@ -283,9 +551,9 @@ export async function POST(
     };
 
     /*
-     * ---------------------------------------------------------
+     * -------------------------------------------------------
      * CLEAN COURSE PROGRESS
-     * ---------------------------------------------------------
+     * -------------------------------------------------------
      */
 
     const safeCourses:
@@ -317,17 +585,9 @@ export async function POST(
         : [];
 
     /*
-     * ---------------------------------------------------------
-     * IMPORTANT:
-     *
-     * SELECTED CAREER IS THE SOURCE OF TRUTH.
-     *
-     * If Roadmap says Data Analyst,
-     * AI MUST analyze Data Analyst.
-     *
-     * We do NOT blindly use the portfolio's
-     * saved career_goal anymore.
-     * ---------------------------------------------------------
+     * -------------------------------------------------------
+     * SELECTED CAREER
+     * -------------------------------------------------------
      */
 
     const requestedCareer =
@@ -362,17 +622,14 @@ export async function POST(
     );
 
     /*
-     * ---------------------------------------------------------
-     * FIND THE SELECTED CAREER
-     * ---------------------------------------------------------
+     * -------------------------------------------------------
+     * FIND CAREER
+     * -------------------------------------------------------
      */
 
-    let career: Career | null =
-      null;
-
-    /*
-     * First try exact title match.
-     */
+    let career:
+      | Career
+      | null = null;
 
     const {
       data: exactCareer,
@@ -417,8 +674,7 @@ export async function POST(
     }
 
     /*
-     * If exact match fails,
-     * try broader matching.
+     * Broader career search.
      */
 
     if (!career) {
@@ -469,9 +725,9 @@ export async function POST(
     }
 
     /*
-     * ---------------------------------------------------------
-     * CAREER DATA FOR AI
-     * ---------------------------------------------------------
+     * -------------------------------------------------------
+     * CAREER DATA
+     * -------------------------------------------------------
      */
 
     const careerDataForAI =
@@ -520,9 +776,9 @@ export async function POST(
         : null;
 
     /*
-     * ---------------------------------------------------------
+     * -------------------------------------------------------
      * SYSTEM PROMPT
-     * ---------------------------------------------------------
+     * -------------------------------------------------------
      */
 
     const systemPrompt = `
@@ -530,27 +786,17 @@ You are an expert career mentor, portfolio reviewer,
 project reviewer, learning-path advisor, and technical
 hiring advisor.
 
-The application has explicitly selected ONE career for
-this review.
+The application has explicitly selected ONE career.
 
 The SELECTED CAREER is the only career that should be used
 for career alignment.
 
-Do NOT use the student's old/saved career goal to override
+Do NOT use the student's old saved career goal to override
 the selected career.
 
-The portfolio may contain an older career_goal such as
-"Web Developer", while the selected career may be
-"Data Analyst".
-
-If that happens:
-
-- Analyze the student against Data Analyst.
-- Do NOT analyze against Web Developer.
-- Do NOT recommend Web Developer-specific missing skills
-  merely because the portfolio says Web Developer.
-- Career requirements must come from the selected career
-  supplied by the application.
+If the portfolio contains an older career_goal such as
+"Web Developer" while the selected career is "Data Analyst",
+analyze the student against Data Analyst.
 
 The CAREER DATABASE INFORMATION is the source of truth.
 
@@ -567,24 +813,22 @@ Use:
 - suitable study types
 - suitable branches
 
-to evaluate the student's readiness.
+to evaluate readiness.
 
 IMPORTANT:
 
-- Do not invent skills the student already knows.
-- Do not assume a career requirement is already mastered.
+- Do not invent skills.
+- Do not invent projects.
+- Do not invent technical experience.
+- Do not assume unlisted technologies.
 - Clearly distinguish demonstrated skills from missing skills.
-- Do not assume technologies that are not listed.
-- Do not fabricate projects.
-- Do not fabricate technical experience.
 - If information is missing, say evidence is missing.
 - Be honest but encouraging.
 - Give practical next steps.
 
 CAREER ALIGNMENT:
 
-Compare the student's portfolio specifically against the
-SELECTED CAREER.
+Compare the portfolio specifically against the SELECTED CAREER.
 
 Identify:
 
@@ -599,15 +843,14 @@ Identify:
 
 SKILL ANALYSIS:
 
-The student's listed skills are evidence of claimed skills.
+The student's listed skills are claimed skills.
 
 The selected career's skills are requirements.
 
-If the student clearly demonstrates a required skill,
-consider it a match.
+If a required skill is demonstrated through skills,
+projects, or course progress, consider it a match.
 
-If the skill is not demonstrated through skills,
-projects, or course progress, it can be a gap.
+If it is not demonstrated, it may be a gap.
 
 Do not mark everything as missing automatically.
 
@@ -632,14 +875,11 @@ Evaluate:
 - career relevance
 - improvement opportunities
 
-The project does not have to exactly match a career project
-idea to be useful.
+Do not fabricate project information.
 
 LEARNING RECOMMENDATIONS:
 
-Use the SELECTED CAREER's learning path and skills.
-
-Recommendations must be specific.
+Use the selected career's learning path and skills.
 
 ACTION PLAN:
 
@@ -650,14 +890,15 @@ Create practical priorities:
 - Low
 
 Return ONLY valid JSON.
+
 Do not return markdown.
 Do not return code fences.
 `;
 
     /*
-     * ---------------------------------------------------------
+     * -------------------------------------------------------
      * USER PROMPT
-     * ---------------------------------------------------------
+     * -------------------------------------------------------
      */
 
     const userPrompt = `
@@ -671,13 +912,13 @@ ${JSON.stringify(
 
 IMPORTANT:
 
-The selected career for this review is:
+The selected career is:
 
 "${targetCareer}"
 
 This career must be used for ALL career alignment,
-missing skills, learning recommendations, project relevance,
-and action planning.
+missing skills, learning recommendations,
+project relevance, and action planning.
 
 STUDENT PORTFOLIO:
 
@@ -695,7 +936,7 @@ ${JSON.stringify(
   2
 )}
 
-Return exactly this structure:
+Return exactly this JSON structure:
 
 {
   "summary": "Short overall assessment",
@@ -711,20 +952,20 @@ Return exactly this structure:
   ],
 
   "skillMatches": [
-    "skill that matches the SELECTED CAREER"
+    "skill that matches the selected career"
   ],
 
   "missingSkills": [
-    "skill the student should learn for the SELECTED CAREER"
+    "skill the student should learn"
   ],
 
   "careerAlignment": {
-    "fitSummary": "Explain fit specifically for the SELECTED CAREER",
+    "fitSummary": "Explain fit specifically for the selected career",
     "matchedAreas": [
       "matched area"
     ],
     "gaps": [
-      "gap specifically related to the SELECTED CAREER"
+      "career-specific gap"
     ]
   },
 
@@ -734,7 +975,7 @@ Return exactly this structure:
       "useful learning"
     ],
     "nextLearningFocus": [
-      "next learning focus specifically for the SELECTED CAREER"
+      "next learning focus"
     ]
   },
 
@@ -748,7 +989,7 @@ Return exactly this structure:
       "suggestions": [
         "improvement"
       ],
-      "careerRelevance": "Relevance to SELECTED CAREER",
+      "careerRelevance": "Relevance to selected career",
       "problemClarity": "Problem clarity",
       "solutionClarity": "Solution clarity",
       "technologyAssessment": "Technology assessment",
@@ -772,98 +1013,27 @@ RULES:
 - Scores must be between 0 and 100.
 - Do not invent projects.
 - Do not invent skills.
-- Missing skills must relate to the SELECTED CAREER.
-- nextLearningFocus must relate to the SELECTED CAREER.
-- actionPlan must relate to the SELECTED CAREER.
-- If the selected career is Data Analyst, recommendations should
-  be Data Analyst related.
-- If the selected career is Web Developer, recommendations should
-  be Web Developer related.
-- Never mix the two careers.
+- Missing skills must relate to the selected career.
+- nextLearningFocus must relate to the selected career.
+- actionPlan must relate to the selected career.
+- Never mix different careers.
 `;
 
     /*
-     * ---------------------------------------------------------
-     * GROQ REQUEST
-     * ---------------------------------------------------------
+     * -------------------------------------------------------
+     * CALL AI
+     * -------------------------------------------------------
      */
 
-    const groqResponse =
-      await fetch(
-        "https://api.groq.com/openai/v1/chat/completions",
-        {
-          method: "POST",
-
-          headers: {
-            "Content-Type":
-              "application/json",
-
-            Authorization: `Bearer ${groqApiKey}`,
-          },
-
-          body: JSON.stringify({
-            model: groqModel,
-
-            temperature: 0.2,
-
-            max_tokens: 4000,
-
-            messages: [
-              {
-                role: "system",
-                content:
-                  systemPrompt,
-              },
-
-              {
-                role: "user",
-                content:
-                  userPrompt,
-              },
-            ],
-          }),
-        }
+    const aiResult =
+      await askAI(
+        systemPrompt +
+          "\n\n" +
+          userPrompt
       );
-
-    /*
-     * ---------------------------------------------------------
-     * GROQ ERROR
-     * ---------------------------------------------------------
-     */
-
-    if (!groqResponse.ok) {
-      const errorText =
-        await groqResponse.text();
-
-      console.error(
-        "Groq API error:",
-        groqResponse.status,
-        errorText
-      );
-
-      return NextResponse.json(
-        {
-          error:
-            "AI review service is temporarily unavailable.",
-
-          details:
-            process.env.NODE_ENV ===
-            "development"
-              ? errorText
-              : undefined,
-        },
-        {
-          status: 502,
-        }
-      );
-    }
-
-    const groqData =
-      await groqResponse.json();
 
     const content =
-      groqData?.choices?.[0]
-        ?.message?.content;
+      aiResult.response;
 
     if (!content) {
       return NextResponse.json(
@@ -878,9 +1048,9 @@ RULES:
     }
 
     /*
-     * ---------------------------------------------------------
-     * PARSE JSON
-     * ---------------------------------------------------------
+     * -------------------------------------------------------
+     * PARSE AI JSON
+     * -------------------------------------------------------
      */
 
     let result: any;
@@ -899,10 +1069,19 @@ RULES:
         parseError
       );
 
+      console.error(
+        "Raw AI response:",
+        content
+      );
+
       return NextResponse.json(
         {
           error:
             "AI returned an invalid review format.",
+          provider:
+            aiResult.provider,
+          model:
+            aiResult.model,
         },
         {
           status: 502,
@@ -911,14 +1090,14 @@ RULES:
     }
 
     /*
-     * ---------------------------------------------------------
+     * -------------------------------------------------------
      * PROJECT RESULTS
-     * ---------------------------------------------------------
+     * -------------------------------------------------------
      */
 
     const aiProjects =
       Array.isArray(
-        result.projectResults
+        result?.projectResults
       )
         ? result.projectResults
         : [];
@@ -933,7 +1112,8 @@ RULES:
                 safeString(
                   item?.title
                 ).toLowerCase() ===
-                project.title.toLowerCase()
+                project.title
+                  .toLowerCase()
             ) ||
             {};
 
@@ -996,9 +1176,9 @@ RULES:
       );
 
     /*
-     * ---------------------------------------------------------
+     * -------------------------------------------------------
      * CAREER ALIGNMENT
-     * ---------------------------------------------------------
+     * -------------------------------------------------------
      */
 
     const careerAlignment = {
@@ -1022,9 +1202,9 @@ RULES:
     };
 
     /*
-     * ---------------------------------------------------------
+     * -------------------------------------------------------
      * LEARNING PROGRESS
-     * ---------------------------------------------------------
+     * -------------------------------------------------------
      */
 
     const learningProgress = {
@@ -1048,14 +1228,14 @@ RULES:
     };
 
     /*
-     * ---------------------------------------------------------
+     * -------------------------------------------------------
      * ACTION PLAN
-     * ---------------------------------------------------------
+     * -------------------------------------------------------
      */
 
     const actionPlan =
       Array.isArray(
-        result.actionPlan
+        result?.actionPlan
       )
         ? result.actionPlan
             .map(
@@ -1084,44 +1264,40 @@ RULES:
         : [];
 
     /*
-     * ---------------------------------------------------------
+     * -------------------------------------------------------
      * FINAL RESULT
-     * ---------------------------------------------------------
-     *
-     * Notice:
-     * career is the ACTUAL SELECTED CAREER.
-     * ---------------------------------------------------------
+     * -------------------------------------------------------
      */
 
     const finalResult = {
       score: safeNumber(
-        result.score,
+        result?.score,
         0
       ),
 
       summary:
         safeString(
-          result.summary
+          result?.summary
         ),
 
       strengths:
         safeArray(
-          result.strengths
+          result?.strengths
         ),
 
       suggestions:
         safeArray(
-          result.suggestions
+          result?.suggestions
         ),
 
       skillMatches:
         safeArray(
-          result.skillMatches
+          result?.skillMatches
         ),
 
       missingSkills:
         safeArray(
-          result.missingSkills
+          result?.missingSkills
         ),
 
       projectResults,
@@ -1147,7 +1323,11 @@ RULES:
 
       source: "ai",
 
-      model: groqModel,
+      model:
+        aiResult.model,
+
+      provider:
+        aiResult.provider,
     };
 
     return NextResponse.json(
@@ -1159,13 +1339,32 @@ RULES:
       error
     );
 
+    const message =
+      error instanceof Error
+        ? error.message
+        : "";
+
+    const isTimeout =
+      error instanceof Error &&
+      error.name ===
+        "AbortError";
+
     return NextResponse.json(
       {
-        error:
-          "Unable to generate portfolio review.",
+        error: isTimeout
+          ? "AI portfolio review timed out. Please try again."
+          : "Unable to generate portfolio review.",
+
+        details:
+          process.env.NODE_ENV ===
+          "development"
+            ? message
+            : undefined,
       },
       {
-        status: 500,
+        status: isTimeout
+          ? 504
+          : 500,
       }
     );
   }
