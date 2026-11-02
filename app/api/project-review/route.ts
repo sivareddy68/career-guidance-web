@@ -3,7 +3,6 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
 
-export const maxDuration = 120;
 
 type PortfolioProject = {
   title: string;
@@ -40,9 +39,15 @@ type Career = {
   project_ideas: string;
   suitable_study_types: string;
   suitable_branches: string;
-  certificate_guidance: string;
+  certification_guidance: string;
   interview_topics: string;
   internship_guidance: string;
+};
+
+type AIResult = {
+  response: string;
+  provider: string;
+  model: string;
 };
 
 const OLLAMA_URL =
@@ -90,34 +95,12 @@ function getSupabaseAdmin() {
 
 /*
  * ---------------------------------------------------------
- * JSON HELPERS
+ * GENERAL HELPERS
  * ---------------------------------------------------------
  */
 
-function cleanJsonText(text: string) {
-  let cleaned = String(text || "").trim();
-
-  cleaned = cleaned
-    .replace(/^```json\s*/i, "")
-    .replace(/^```\s*/i, "")
-    .replace(/\s*```$/i, "")
-    .trim();
-
-  const firstBrace = cleaned.indexOf("{");
-  const lastBrace = cleaned.lastIndexOf("}");
-
-  if (
-    firstBrace !== -1 &&
-    lastBrace !== -1 &&
-    lastBrace > firstBrace
-  ) {
-    cleaned = cleaned.slice(
-      firstBrace,
-      lastBrace + 1
-    );
-  }
-
-  return cleaned;
+function safeString(value: unknown): string {
+  return String(value ?? "").trim();
 }
 
 function safeArray(value: unknown): string[] {
@@ -126,14 +109,14 @@ function safeArray(value: unknown): string[] {
   }
 
   return value
-    .map((item) => String(item ?? "").trim())
+    .map((item) => safeString(item))
     .filter(Boolean);
 }
 
 function safeNumber(
   value: unknown,
   fallback = 0
-) {
+): number {
   const number = Number(value);
 
   if (!Number.isFinite(number)) {
@@ -146,8 +129,93 @@ function safeNumber(
   );
 }
 
-function safeString(value: unknown) {
-  return String(value ?? "").trim();
+/*
+ * Extract one complete JSON object from AI output.
+ *
+ * This handles:
+ * - JSON surrounded by explanatory text.
+ * - Markdown code fences.
+ * - Braces inside quoted strings.
+ */
+
+function extractJson(text: string): string {
+  const cleaned = String(text || "")
+    .replace(/```json/gi, "")
+    .replace(/```/g, "")
+    .trim();
+
+  const start = cleaned.indexOf("{");
+
+  if (start === -1) {
+    throw new Error(
+      "AI response does not contain a JSON object."
+    );
+  }
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = start; i < cleaned.length; i++) {
+    const char = cleaned[i];
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+
+      continue;
+    }
+
+    if (char === '"') {
+      inString = true;
+    } else if (char === "{") {
+      depth++;
+    } else if (char === "}") {
+      depth--;
+
+      if (depth === 0) {
+        return cleaned.slice(start, i + 1);
+      }
+    }
+  }
+
+  throw new Error(
+    "AI returned incomplete JSON."
+  );
+}
+
+function parseAIJson(text: string): any {
+  const jsonText = extractJson(text);
+  const result = JSON.parse(jsonText);
+
+  if (
+    !result ||
+    typeof result !== "object" ||
+    Array.isArray(result)
+  ) {
+    throw new Error(
+      "AI response must be a JSON object."
+    );
+  }
+
+  if (
+    typeof result.summary !== "string" ||
+    !Array.isArray(result.strengths) ||
+    !Array.isArray(result.suggestions) ||
+    !Array.isArray(result.skillMatches) ||
+    !Array.isArray(result.missingSkills)
+  ) {
+    throw new Error(
+      "AI JSON is missing required review fields."
+    );
+  }
+
+  return result;
 }
 
 /*
@@ -163,7 +231,7 @@ async function askOllama(
 
   const timeout = setTimeout(
     () => controller.abort(),
-    120000
+    240000
   );
 
   try {
@@ -183,7 +251,7 @@ async function askOllama(
           keep_alive: "10m",
 
           options: {
-            temperature: 0.2,
+            temperature: 0.1,
             num_predict: 4000,
             num_ctx: 8192,
           },
@@ -263,18 +331,14 @@ async function askCloudflare(
         },
 
         /*
-         * IMPORTANT:
-         * JSON Mode has been removed because the
-         * selected model does not list support for it.
-         *
-         * The prompt itself requests valid JSON.
-         * cleanJsonText() handles common code fences.
+         * Do not use response_format here.
+         * The selected model does not list JSON Mode support.
          */
 
         body: JSON.stringify({
           prompt,
           max_tokens: 4000,
-          temperature: 0.2,
+          temperature: 0.1,
         }),
 
         signal: controller.signal,
@@ -295,13 +359,8 @@ async function askCloudflare(
     try {
       data = JSON.parse(rawText);
     } catch {
-      console.error(
-        "Cloudflare returned non-JSON HTTP response:",
-        rawText
-      );
-
       throw new Error(
-        "Cloudflare AI returned an invalid HTTP response."
+        "Cloudflare returned an invalid HTTP response."
       );
     }
 
@@ -329,12 +388,12 @@ async function askCloudflare(
 
     if (!reply) {
       console.error(
-        "Unexpected Cloudflare AI response:",
+        "Unexpected Cloudflare response:",
         data
       );
 
       throw new Error(
-        "Cloudflare AI returned an unreadable response."
+        "Cloudflare AI returned an empty or unreadable response."
       );
     }
 
@@ -348,16 +407,11 @@ async function askCloudflare(
  * ---------------------------------------------------------
  * AI PROVIDER
  * ---------------------------------------------------------
- *
- * Localhost:
- *   Ollama + Qwen
- *
- * Production:
- *   Cloudflare Workers AI
- * ---------------------------------------------------------
  */
 
-async function askAI(prompt: string) {
+async function askAI(
+  prompt: string
+): Promise<AIResult> {
   if (process.env.NODE_ENV === "production") {
     const response = await askCloudflare(prompt);
 
@@ -405,6 +459,289 @@ async function askAI(prompt: string) {
 
 /*
  * ---------------------------------------------------------
+ * BUILD AI PROMPT
+ * ---------------------------------------------------------
+ */
+
+function buildPrompt(
+  portfolio: Portfolio,
+  courses: CourseProgress[],
+  careerData: any,
+  targetCareer: string,
+  retry = false
+): string {
+  const retryInstruction = retry
+    ? `
+IMPORTANT RETRY:
+Your previous response was invalid.
+Do not repeat the instructions.
+Do not return bullet points or explanations.
+Return the complete JSON object immediately.
+Start your response with { and end with }.
+`
+    : "";
+
+  return `
+You are an expert student portfolio and career reviewer.
+
+Analyze the student's portfolio for the selected career only.
+
+SELECTED CAREER:
+${targetCareer}
+
+CAREER DATABASE INFORMATION:
+${JSON.stringify(careerData)}
+
+STUDENT PORTFOLIO:
+${JSON.stringify(portfolio)}
+
+STUDENT COURSE PROGRESS:
+${JSON.stringify(courses)}
+
+REVIEW RULES:
+
+1. Evaluate the portfolio against the selected career only.
+2. Do not use an older saved career goal to override the selected career.
+3. Do not invent skills, projects, technologies, or experience.
+4. Compare student skills with career requirements.
+5. Use course progress as supporting evidence, not proof of mastery.
+6. Review every project supplied by the student.
+7. Give honest and practical suggestions.
+8. Identify missing beginner and advanced skills.
+9. Recommend learning priorities related to the selected career.
+10. Scores must be integers between 0 and 100.
+11. If no projects are supplied, return an empty projectResults array.
+12. Use short, clear sentences.
+13. Do not repeat these instructions in your response.
+
+${retryInstruction}
+
+OUTPUT REQUIREMENTS:
+
+Return ONE valid JSON object.
+No markdown.
+No code fences.
+No introductory text.
+No bullet points outside JSON.
+Use double quotes for all JSON keys and string values.
+Do not include trailing commas.
+Do not put comments inside JSON.
+
+The JSON must have exactly this structure:
+
+{
+  "summary": "Overall portfolio assessment",
+  "score": 70,
+  "strengths": ["Strength"],
+  "suggestions": ["Specific improvement"],
+  "skillMatches": ["Matching skill"],
+  "missingSkills": ["Missing career skill"],
+  "careerAlignment": {
+    "fitSummary": "Career fit explanation",
+    "matchedAreas": ["Matched area"],
+    "gaps": ["Career gap"]
+  },
+  "learningProgress": {
+    "summary": "Learning progress assessment",
+    "usefulLearning": ["Useful learning"],
+    "nextLearningFocus": ["Next skill to learn"]
+  },
+  "projectResults": [
+    {
+      "title": "Actual student project title",
+      "score": 70,
+      "strengths": ["Project strength"],
+      "suggestions": ["Project improvement"],
+      "careerRelevance": "Career relevance",
+      "problemClarity": "Problem assessment",
+      "solutionClarity": "Solution assessment",
+      "technologyAssessment": "Technology assessment",
+      "contributionEvidence": "Contribution assessment",
+      "evidenceQuality": "Evidence assessment"
+    }
+  ],
+  "actionPlan": [
+    {
+      "priority": "High",
+      "task": "Concrete action",
+      "reason": "Why this action matters"
+    }
+  ]
+}
+
+FINAL CHECK BEFORE RESPONDING:
+
+- projectResults must have one entry for every supplied student project.
+- Do not create projects that do not exist.
+- All required fields must be present.
+- Return valid JSON only.
+`;
+}
+
+/*
+ * ---------------------------------------------------------
+ * NORMALIZE AI RESPONSE
+ * ---------------------------------------------------------
+ */
+
+function normalizeReview(
+  result: any,
+  portfolio: Portfolio,
+  career: Career | null,
+  targetCareer: string,
+  aiResult: AIResult
+) {
+  const aiProjects = Array.isArray(
+    result?.projectResults
+  )
+    ? result.projectResults
+    : [];
+
+  const projectResults =
+    portfolio.projects.map(
+      (project, index) => {
+        const aiProject =
+          aiProjects.find(
+            (item: any) =>
+              safeString(item?.title).toLowerCase() ===
+              project.title.toLowerCase()
+          ) ||
+          aiProjects[index] ||
+          {};
+
+        return {
+          title:
+            safeString(aiProject.title) ||
+            project.title ||
+            `Project ${index + 1}`,
+
+          score: safeNumber(
+            aiProject.score,
+            0
+          ),
+
+          strengths: safeArray(
+            aiProject.strengths
+          ),
+
+          suggestions: safeArray(
+            aiProject.suggestions
+          ),
+
+          careerRelevance: safeString(
+            aiProject.careerRelevance
+          ),
+
+          problemClarity: safeString(
+            aiProject.problemClarity
+          ),
+
+          solutionClarity: safeString(
+            aiProject.solutionClarity
+          ),
+
+          technologyAssessment: safeString(
+            aiProject.technologyAssessment
+          ),
+
+          contributionEvidence: safeString(
+            aiProject.contributionEvidence
+          ),
+
+          evidenceQuality: safeString(
+            aiProject.evidenceQuality
+          ),
+        };
+      }
+    );
+
+  const careerAlignment = {
+    fitSummary: safeString(
+      result?.careerAlignment?.fitSummary
+    ),
+
+    matchedAreas: safeArray(
+      result?.careerAlignment?.matchedAreas
+    ),
+
+    gaps: safeArray(
+      result?.careerAlignment?.gaps
+    ),
+  };
+
+  const learningProgress = {
+    summary: safeString(
+      result?.learningProgress?.summary
+    ),
+
+    usefulLearning: safeArray(
+      result?.learningProgress?.usefulLearning
+    ),
+
+    nextLearningFocus: safeArray(
+      result?.learningProgress?.nextLearningFocus
+    ),
+  };
+
+  const actionPlan = Array.isArray(
+    result?.actionPlan
+  )
+    ? result.actionPlan
+        .map((item: any) => ({
+          priority:
+            safeString(item?.priority) ||
+            "Medium",
+
+          task: safeString(item?.task),
+
+          reason: safeString(item?.reason),
+        }))
+        .filter((item: any) => item.task)
+    : [];
+
+  return {
+    score: safeNumber(result?.score, 0),
+
+    summary: safeString(result?.summary),
+
+    strengths: safeArray(result?.strengths),
+
+    suggestions: safeArray(result?.suggestions),
+
+    skillMatches: safeArray(result?.skillMatches),
+
+    missingSkills: safeArray(result?.missingSkills),
+
+    projectResults,
+
+    careerAlignment,
+
+    learningProgress,
+
+    actionPlan,
+
+    career: career
+      ? {
+          id: career.id,
+          title: career.title,
+          category: career.category,
+        }
+      : {
+          id: null,
+          title: targetCareer,
+          category: "",
+        },
+
+    source: "ai",
+
+    model: aiResult.model,
+
+    provider: aiResult.provider,
+  };
+}
+
+/*
+ * ---------------------------------------------------------
  * POST API
  * ---------------------------------------------------------
  */
@@ -435,17 +772,13 @@ export async function POST(request: NextRequest) {
     }
 
     /*
-     * -------------------------------------------------------
      * SUPABASE
-     * -------------------------------------------------------
      */
 
     const supabase = getSupabaseAdmin();
 
     /*
-     * -------------------------------------------------------
      * AUTHENTICATION
-     * -------------------------------------------------------
      */
 
     const authHeader =
@@ -483,9 +816,7 @@ export async function POST(request: NextRequest) {
     }
 
     /*
-     * -------------------------------------------------------
      * CLEAN PORTFOLIO
-     * -------------------------------------------------------
      */
 
     const safePortfolio: Portfolio = {
@@ -517,9 +848,7 @@ export async function POST(request: NextRequest) {
     };
 
     /*
-     * -------------------------------------------------------
      * CLEAN COURSE PROGRESS
-     * -------------------------------------------------------
      */
 
     const safeCourses: CourseProgress[] =
@@ -541,9 +870,7 @@ export async function POST(request: NextRequest) {
         : [];
 
     /*
-     * -------------------------------------------------------
      * SELECTED CAREER
-     * -------------------------------------------------------
      */
 
     const requestedCareer = safeString(
@@ -575,10 +902,28 @@ export async function POST(request: NextRequest) {
     );
 
     /*
-     * -------------------------------------------------------
-     * FIND CAREER
-     * -------------------------------------------------------
+     * CAREER LOOKUP
+     *
+     * Correct database column:
+     * certification_guidance
      */
+
+    const careerSelect = `
+      id,
+      title,
+      category,
+      description,
+      daily_work,
+      beginner_skills,
+      advanced_skills,
+      learning_path,
+      project_ideas,
+      suitable_study_types,
+      suitable_branches,
+      certification_guidance,
+      interview_topics,
+      internship_guidance
+    `;
 
     let career: Career | null = null;
 
@@ -587,22 +932,7 @@ export async function POST(request: NextRequest) {
       error: exactCareerError,
     } = await supabase
       .from("careers")
-      .select(`
-        id,
-        title,
-        category,
-        description,
-        daily_work,
-        beginner_skills,
-        advanced_skills,
-        learning_path,
-        project_ideas,
-        suitable_study_types,
-        suitable_branches,
-        certificate_guidance,
-        interview_topics,
-        internship_guidance
-      `)
+      .select(careerSelect)
       .ilike("title", targetCareer)
       .limit(1)
       .maybeSingle();
@@ -619,7 +949,7 @@ export async function POST(request: NextRequest) {
     }
 
     /*
-     * Broader career search.
+     * BROADER CAREER SEARCH
      */
 
     if (!career) {
@@ -628,22 +958,7 @@ export async function POST(request: NextRequest) {
         error: careerSearchError,
       } = await supabase
         .from("careers")
-        .select(`
-          id,
-          title,
-          category,
-          description,
-          daily_work,
-          beginner_skills,
-          advanced_skills,
-          learning_path,
-          project_ideas,
-          suitable_study_types,
-          suitable_branches,
-          certificate_guidance,
-          interview_topics,
-          internship_guidance
-        `)
+        .select(careerSelect)
         .ilike("title", `%${targetCareer}%`)
         .limit(1);
 
@@ -660,9 +975,7 @@ export async function POST(request: NextRequest) {
     }
 
     /*
-     * -------------------------------------------------------
-     * CAREER DATA
-     * -------------------------------------------------------
+     * CAREER INFORMATION
      */
 
     const careerDataForAI = career
@@ -680,8 +993,8 @@ export async function POST(request: NextRequest) {
             career.suitable_study_types,
           suitable_branches:
             career.suitable_branches,
-          certificate_guidance:
-            career.certificate_guidance,
+          certification_guidance:
+            career.certification_guidance,
           interview_topics:
             career.interview_topics,
           internship_guidance:
@@ -690,288 +1003,84 @@ export async function POST(request: NextRequest) {
       : null;
 
     /*
-     * -------------------------------------------------------
-     * SYSTEM PROMPT
-     * -------------------------------------------------------
+     * AI REVIEW + ONE JSON RETRY
      */
 
-    const systemPrompt = `
-You are an expert career mentor, portfolio reviewer,
-project reviewer, learning-path advisor, and technical
-hiring advisor.
+    let aiResult: AIResult | null = null;
+    let parsedResult: any = null;
+    let lastParseError: unknown = null;
 
-The application has explicitly selected ONE career.
-
-The SELECTED CAREER is the only career that should be used
-for career alignment.
-
-Do NOT use the student's old saved career goal to override
-the selected career.
-
-If the portfolio contains an older career_goal such as
-"Web Developer" while the selected career is "Data Analyst",
-analyze the student against Data Analyst.
-
-The CAREER DATABASE INFORMATION is the source of truth.
-
-Use:
-
-- beginner_skills
-- advanced_skills
-- learning_path
-- project_ideas
-- daily_work
-- interview_topics
-- internship_guidance
-- certificate_guidance
-- suitable study types
-- suitable branches
-
-to evaluate readiness.
-
-IMPORTANT:
-
-- Do not invent skills.
-- Do not invent projects.
-- Do not invent technical experience.
-- Do not assume unlisted technologies.
-- Clearly distinguish demonstrated skills from missing skills.
-- If information is missing, say evidence is missing.
-- Be honest but encouraging.
-- Give practical next steps.
-
-CAREER ALIGNMENT:
-
-Compare the portfolio specifically against the SELECTED CAREER.
-
-Identify:
-
-1. Strong matches
-2. Partial matches
-3. Missing beginner skills
-4. Missing advanced skills
-5. Missing project experience
-6. Learning-path gaps
-7. Evidence gaps
-8. What the student should learn next
-
-SKILL ANALYSIS:
-
-The student's listed skills are claimed skills.
-
-The selected career's skills are requirements.
-
-If a required skill is demonstrated through skills,
-projects, or course progress, consider it a match.
-
-If it is not demonstrated, it may be a gap.
-
-Do not mark everything as missing automatically.
-
-COURSE PROGRESS:
-
-Use course progress as supporting evidence.
-
-Completing lessons does not automatically mean professional
-mastery.
-
-PROJECT ANALYSIS:
-
-Review every supplied project.
-
-Evaluate:
-
-- problem clarity
-- solution clarity
-- technology
-- contribution
-- evidence
-- career relevance
-- improvement opportunities
-
-Do not fabricate project information.
-
-LEARNING RECOMMENDATIONS:
-
-Use the selected career's learning path and skills.
-
-ACTION PLAN:
-
-Create practical priorities:
-
-- High
-- Medium
-- Low
-
-Return ONLY valid JSON.
-
-Do not return markdown.
-Do not return code fences.
-`;
-
-    /*
-     * -------------------------------------------------------
-     * USER PROMPT
-     * -------------------------------------------------------
-     */
-
-    const userPrompt = `
-SELECTED CAREER:
-
-${JSON.stringify(careerDataForAI, null, 2)}
-
-IMPORTANT:
-
-The selected career is:
-
-"${targetCareer}"
-
-This career must be used for ALL career alignment,
-missing skills, learning recommendations,
-project relevance, and action planning.
-
-STUDENT PORTFOLIO:
-
-${JSON.stringify(safePortfolio, null, 2)}
-
-COURSE / LEARNING PROGRESS:
-
-${JSON.stringify(safeCourses, null, 2)}
-
-Return exactly this JSON structure:
-
-{
-  "summary": "Short overall assessment",
-  "score": 0,
-  "strengths": [
-    "strength"
-  ],
-  "suggestions": [
-    "specific improvement"
-  ],
-  "skillMatches": [
-    "skill that matches the selected career"
-  ],
-  "missingSkills": [
-    "skill the student should learn"
-  ],
-  "careerAlignment": {
-    "fitSummary": "Explain fit specifically for the selected career",
-    "matchedAreas": [
-      "matched area"
-    ],
-    "gaps": [
-      "career-specific gap"
-    ]
-  },
-  "learningProgress": {
-    "summary": "Learning progress summary",
-    "usefulLearning": [
-      "useful learning"
-    ],
-    "nextLearningFocus": [
-      "next learning focus"
-    ]
-  },
-  "projectResults": [
-    {
-      "title": "Project title",
-      "score": 0,
-      "strengths": [
-        "strength"
-      ],
-      "suggestions": [
-        "improvement"
-      ],
-      "careerRelevance": "Relevance to selected career",
-      "problemClarity": "Problem clarity",
-      "solutionClarity": "Solution clarity",
-      "technologyAssessment": "Technology assessment",
-      "contributionEvidence": "Contribution evidence",
-      "evidenceQuality": "Evidence quality"
-    }
-  ],
-  "actionPlan": [
-    {
-      "priority": "High",
-      "task": "Concrete action",
-      "reason": "Why it matters"
-    }
-  ]
-}
-
-RULES:
-
-- projectResults must contain one item for every student project.
-- Scores must be between 0 and 100.
-- Do not invent projects.
-- Do not invent skills.
-- Missing skills must relate to the selected career.
-- nextLearningFocus must relate to the selected career.
-- actionPlan must relate to the selected career.
-- Never mix different careers.
-`;
-
-    /*
-     * -------------------------------------------------------
-     * CALL AI
-     * -------------------------------------------------------
-     */
-
-    console.log(
-      "Starting AI portfolio review...",
-      {
-        career: targetCareer,
-        environment: process.env.NODE_ENV,
-      }
-    );
-
-    const aiResult = await askAI(
-      systemPrompt + "\n\n" + userPrompt
-    );
-
-    const content = aiResult.response;
-
-    if (!content) {
-      return NextResponse.json(
+    for (let attempt = 0; attempt < 2; attempt++) {
+      console.log(
+        `Starting AI portfolio review. Attempt ${attempt + 1}/2`,
         {
-          error: "AI did not return a review.",
-        },
-        {
-          status: 502,
+          career: targetCareer,
+          environment: process.env.NODE_ENV,
         }
       );
+
+      const prompt = buildPrompt(
+        safePortfolio,
+        safeCourses,
+        careerDataForAI,
+        targetCareer,
+        attempt === 1
+      );
+
+      aiResult = await askAI(prompt);
+
+      try {
+        parsedResult = parseAIJson(
+          aiResult.response
+        );
+
+        console.log(
+          "AI JSON validation successful.",
+          {
+            provider: aiResult.provider,
+            model: aiResult.model,
+          }
+        );
+
+        break;
+      } catch (parseError) {
+        lastParseError = parseError;
+
+        console.error(
+          `AI JSON validation failed on attempt ${attempt + 1}:`,
+          parseError
+        );
+
+        if (attempt === 0) {
+          console.log(
+            "Retrying AI with stricter JSON instructions..."
+          );
+        }
+      }
     }
 
-    /*
-     * -------------------------------------------------------
-     * PARSE AI JSON
-     * -------------------------------------------------------
-     */
-
-    let result: any;
-
-    try {
-      const cleaned = cleanJsonText(content);
-      result = JSON.parse(cleaned);
-    } catch (parseError) {
+    if (!parsedResult || !aiResult) {
       console.error(
-        "AI JSON parse error:",
-        parseError
+        "AI failed to produce valid JSON after retry.",
+        lastParseError
       );
 
       console.error(
-        "Raw AI response:",
-        content
+        "Last raw AI response:",
+        aiResult?.response?.slice(0, 3000)
       );
 
       return NextResponse.json(
         {
           error:
-            "AI returned an invalid review format.",
+            "AI could not generate a valid portfolio review after two attempts.",
 
-          provider: aiResult.provider,
-          model: aiResult.model,
+          details:
+            process.env.NODE_ENV === "development"
+              ? lastParseError instanceof Error
+                ? lastParseError.message
+                : String(lastParseError)
+              : undefined,
         },
         {
           status: 502,
@@ -980,182 +1089,16 @@ RULES:
     }
 
     /*
-     * -------------------------------------------------------
-     * PROJECT RESULTS
-     * -------------------------------------------------------
+     * NORMALIZE RESULT
      */
 
-    const aiProjects = Array.isArray(
-      result?.projectResults
-    )
-      ? result.projectResults
-      : [];
-
-    const projectResults =
-      safePortfolio.projects.map(
-        (project, index) => {
-          const aiProject =
-            aiProjects[index] ||
-            aiProjects.find(
-              (item: any) =>
-                safeString(item?.title).toLowerCase() ===
-                project.title.toLowerCase()
-            ) ||
-            {};
-
-          return {
-            title:
-              safeString(aiProject.title) ||
-              project.title ||
-              `Project ${index + 1}`,
-
-            score: safeNumber(
-              aiProject.score,
-              0
-            ),
-
-            strengths: safeArray(
-              aiProject.strengths
-            ),
-
-            suggestions: safeArray(
-              aiProject.suggestions
-            ),
-
-            careerRelevance: safeString(
-              aiProject.careerRelevance
-            ),
-
-            problemClarity: safeString(
-              aiProject.problemClarity
-            ),
-
-            solutionClarity: safeString(
-              aiProject.solutionClarity
-            ),
-
-            technologyAssessment: safeString(
-              aiProject.technologyAssessment
-            ),
-
-            contributionEvidence: safeString(
-              aiProject.contributionEvidence
-            ),
-
-            evidenceQuality: safeString(
-              aiProject.evidenceQuality
-            ),
-          };
-        }
-      );
-
-    /*
-     * -------------------------------------------------------
-     * CAREER ALIGNMENT
-     * -------------------------------------------------------
-     */
-
-    const careerAlignment = {
-      fitSummary: safeString(
-        result?.careerAlignment?.fitSummary
-      ),
-
-      matchedAreas: safeArray(
-        result?.careerAlignment?.matchedAreas
-      ),
-
-      gaps: safeArray(
-        result?.careerAlignment?.gaps
-      ),
-    };
-
-    /*
-     * -------------------------------------------------------
-     * LEARNING PROGRESS
-     * -------------------------------------------------------
-     */
-
-    const learningProgress = {
-      summary: safeString(
-        result?.learningProgress?.summary
-      ),
-
-      usefulLearning: safeArray(
-        result?.learningProgress?.usefulLearning
-      ),
-
-      nextLearningFocus: safeArray(
-        result?.learningProgress?.nextLearningFocus
-      ),
-    };
-
-    /*
-     * -------------------------------------------------------
-     * ACTION PLAN
-     * -------------------------------------------------------
-     */
-
-    const actionPlan = Array.isArray(
-      result?.actionPlan
-    )
-      ? result.actionPlan
-          .map((item: any) => ({
-            priority:
-              safeString(item?.priority) ||
-              "Medium",
-
-            task: safeString(item?.task),
-
-            reason: safeString(item?.reason),
-          }))
-          .filter((item: any) => item.task)
-      : [];
-
-    /*
-     * -------------------------------------------------------
-     * FINAL RESULT
-     * -------------------------------------------------------
-     */
-
-    const finalResult = {
-      score: safeNumber(result?.score, 0),
-
-      summary: safeString(result?.summary),
-
-      strengths: safeArray(result?.strengths),
-
-      suggestions: safeArray(result?.suggestions),
-
-      skillMatches: safeArray(result?.skillMatches),
-
-      missingSkills: safeArray(result?.missingSkills),
-
-      projectResults,
-
-      careerAlignment,
-
-      learningProgress,
-
-      actionPlan,
-
-      career: career
-        ? {
-            id: career.id,
-            title: career.title,
-            category: career.category,
-          }
-        : {
-            id: null,
-            title: targetCareer,
-            category: "",
-          },
-
-      source: "ai",
-
-      model: aiResult.model,
-
-      provider: aiResult.provider,
-    };
+    const finalResult = normalizeReview(
+      parsedResult,
+      safePortfolio,
+      career,
+      targetCareer,
+      aiResult
+    );
 
     console.log(
       "AI portfolio review completed successfully.",
@@ -1187,12 +1130,6 @@ RULES:
           ? "AI portfolio review timed out. Please try again."
           : "Unable to generate portfolio review.",
 
-        /*
-         * Development mode returns the actual error
-         * so we can identify the remaining problem.
-         *
-         * Production does not expose internal details.
-         */
         details:
           process.env.NODE_ENV === "development"
             ? message
