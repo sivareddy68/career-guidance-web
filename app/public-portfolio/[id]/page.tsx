@@ -1,4 +1,3 @@
-
 import { createClient } from "@supabase/supabase-js";
 import Link from "next/link";
 import { connection } from "next/server";
@@ -25,8 +24,7 @@ type PortfolioData = {
 };
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const supabaseKey =
-  process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
 
 if (!supabaseUrl || !supabaseKey) {
   throw new Error(
@@ -58,7 +56,10 @@ function parseProjects(value: PortfolioData["projects"]) {
   if (typeof value === "string") {
     try {
       const parsed: unknown = JSON.parse(value);
-      if (Array.isArray(parsed)) return parsed as PortfolioProject[];
+
+      if (Array.isArray(parsed)) {
+        return parsed as PortfolioProject[];
+      }
     } catch {
       return [];
     }
@@ -112,13 +113,16 @@ async function PublicPortfolioContent({
       <main className="flex min-h-screen items-center justify-center bg-[#070b16] px-5 text-white">
         <div className="max-w-lg rounded-3xl border border-white/10 bg-white/[0.04] p-10 text-center">
           <div className="text-4xl text-blue-400">!</div>
+
           <h1 className="mt-5 text-2xl font-bold">
             Unable to load portfolio
           </h1>
+
           <p className="mt-3 text-slate-400">
             Something went wrong while loading this portfolio.
             Please try again later.
           </p>
+
           <Link
             href="/"
             className="mt-7 inline-block rounded-xl bg-blue-600 px-6 py-3 font-semibold hover:bg-blue-500"
@@ -137,12 +141,15 @@ async function PublicPortfolioContent({
           <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-blue-500/10 text-3xl text-blue-400">
             ?
           </div>
+
           <h1 className="mt-6 text-3xl font-bold">
             Portfolio Not Found
           </h1>
+
           <p className="mt-4 leading-7 text-slate-400">
             This portfolio does not exist or has not been made public.
           </p>
+
           <Link
             href="/"
             className="mt-7 inline-block rounded-xl bg-blue-600 px-6 py-3 font-semibold hover:bg-blue-500"
@@ -163,14 +170,20 @@ async function PublicPortfolioContent({
   );
 
   const skills = parseSkills(portfolio.skills);
+
   const name = portfolio.name?.trim() || "My Portfolio";
-  const role = portfolio.career_goal?.trim() || "Aspiring Developer";
+
+  const role =
+    portfolio.career_goal?.trim() || "Aspiring Developer";
+
   const about =
     portfolio.about?.trim() ||
     "Welcome to my professional portfolio.";
+
   const email = portfolio.email?.trim();
+
   const emailIsValid =
-    email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+    !!email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 
   return (
     <main className="min-h-screen scroll-smooth bg-[#070b16] text-white selection:bg-blue-500/30">
@@ -236,6 +249,7 @@ async function PublicPortfolioContent({
         className="relative isolate overflow-hidden px-5 py-24 sm:py-32 lg:px-8"
       >
         <div className="pointer-events-none absolute -top-40 left-1/4 -z-10 h-[550px] w-[550px] rounded-full bg-blue-600/15 blur-[130px]" />
+
         <div className="pointer-events-none absolute right-0 top-40 -z-10 h-[350px] w-[350px] rounded-full bg-purple-600/10 blur-[110px]" />
 
         <div className="mx-auto grid max-w-7xl items-center gap-16 lg:grid-cols-[1.4fr_0.6fr]">
@@ -293,6 +307,7 @@ async function PublicPortfolioContent({
                 <p className="text-2xl font-black text-blue-400">
                   {skills.length.toString().padStart(2, "0")}
                 </p>
+
                 <p className="mt-1 text-xs text-slate-400">
                   Technical Skills
                 </p>
@@ -302,6 +317,7 @@ async function PublicPortfolioContent({
                 <p className="text-2xl font-black text-purple-400">
                   {projects.length.toString().padStart(2, "0")}
                 </p>
+
                 <p className="mt-1 text-xs text-slate-400">
                   Projects Built
                 </p>
@@ -319,6 +335,7 @@ async function PublicPortfolioContent({
                   <span className="text-xs font-bold uppercase tracking-[0.25em] text-slate-400">
                     Developer Profile
                   </span>
+
                   <span className="text-blue-400">✦</span>
                 </div>
 
@@ -330,7 +347,10 @@ async function PublicPortfolioContent({
 
                 <div className="text-center">
                   <h3 className="text-2xl font-black">{name}</h3>
-                  <p className="mt-2 text-sm text-blue-300">{role}</p>
+
+                  <p className="mt-2 text-sm text-blue-300">
+                    {role}
+                  </p>
                 </div>
 
                 <div className="mt-8 flex items-center justify-center gap-2 border-t border-white/10 pt-6 text-xs text-slate-400">
@@ -353,6 +373,7 @@ async function PublicPortfolioContent({
             <p className="text-xs font-bold uppercase tracking-[0.3em] text-blue-400">
               Get to know me
             </p>
+
             <h2 className="mt-4 text-4xl font-black sm:text-5xl">
               About Me<span className="text-blue-400">.</span>
             </h2>
@@ -365,11 +386,20 @@ async function PublicPortfolioContent({
 
             <div className="mt-8 grid gap-4 sm:grid-cols-2">
               <div className="rounded-2xl border border-white/10 bg-[#0c1426] p-5">
-                <p className="text-sm text-slate-500">Current focus</p>
-                <p className="mt-2 font-bold text-white">{role}</p>
+                <p className="text-sm text-slate-500">
+                  Current focus
+                </p>
+
+                <p className="mt-2 font-bold text-white">
+                  {role}
+                </p>
               </div>
+
               <div className="rounded-2xl border border-white/10 bg-[#0c1426] p-5">
-                <p className="text-sm text-slate-500">My approach</p>
+                <p className="text-sm text-slate-500">
+                  My approach
+                </p>
+
                 <p className="mt-2 font-bold text-white">
                   Learn by building
                 </p>
@@ -385,9 +415,11 @@ async function PublicPortfolioContent({
           <p className="text-xs font-bold uppercase tracking-[0.3em] text-blue-400">
             My Expertise
           </p>
+
           <h2 className="mt-4 text-4xl font-black sm:text-5xl">
             Technical Skills<span className="text-blue-400">.</span>
           </h2>
+
           <p className="mt-5 max-w-2xl leading-8 text-slate-400">
             Technologies and tools I have been learning and using to develop projects.
           </p>
@@ -402,12 +434,15 @@ async function PublicPortfolioContent({
                   <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-blue-500/10 text-sm font-black text-blue-400 transition group-hover:bg-blue-500 group-hover:text-white">
                     {String(index + 1).padStart(2, "0")}
                   </div>
+
                   <h3 className="mt-6 break-words text-lg font-bold text-white">
                     {skill}
                   </h3>
+
                   <p className="mt-2 text-xs text-slate-500">
                     Technical skill
                   </p>
+
                   <div className="mt-5 h-1 overflow-hidden rounded-full bg-slate-800">
                     <div className="h-full w-2/3 rounded-full bg-gradient-to-r from-blue-500 to-purple-500 transition-all group-hover:w-full" />
                   </div>
@@ -431,6 +466,7 @@ async function PublicPortfolioContent({
           <p className="text-xs font-bold uppercase tracking-[0.3em] text-blue-400">
             My Background
           </p>
+
           <h2 className="mt-4 text-4xl font-black sm:text-5xl">
             Education<span className="text-blue-400">.</span>
           </h2>
@@ -440,11 +476,16 @@ async function PublicPortfolioContent({
               <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-blue-500/10 text-2xl text-blue-300">
                 🎓
               </div>
+
               <div>
                 <p className="text-xs font-bold uppercase tracking-widest text-blue-400">
                   Academic Background
                 </p>
-                <h3 className="mt-3 text-2xl font-bold">My Education</h3>
+
+                <h3 className="mt-3 text-2xl font-bold">
+                  My Education
+                </h3>
+
                 <p className="mt-4 whitespace-pre-wrap leading-8 text-slate-300">
                   {portfolio.education ||
                     "Education details have not been added yet."}
@@ -461,9 +502,11 @@ async function PublicPortfolioContent({
           <p className="text-xs font-bold uppercase tracking-[0.3em] text-blue-400">
             My Work
           </p>
+
           <h2 className="mt-4 text-4xl font-black sm:text-5xl">
             Featured Projects<span className="text-blue-400">.</span>
           </h2>
+
           <p className="mt-5 max-w-2xl leading-8 text-slate-400">
             A selection of projects that demonstrate my learning, creativity, and development skills.
           </p>
@@ -472,6 +515,7 @@ async function PublicPortfolioContent({
             <div className="mt-12 grid gap-7 lg:grid-cols-2">
               {projects.map((project, index) => {
                 const projectUrl = safeExternalUrl(project.link);
+
                 const technologies = (project.technologies || "")
                   .split(/[,;\n]/)
                   .map((tech) => tech.trim())
@@ -488,6 +532,7 @@ async function PublicPortfolioContent({
                       <div className="flex h-12 w-12 items-center justify-center rounded-xl border border-blue-400/20 bg-blue-500/10 font-black text-blue-400">
                         {String(index + 1).padStart(2, "0")}
                       </div>
+
                       <span className="text-xs font-semibold uppercase tracking-widest text-slate-500">
                         Project
                       </span>
@@ -547,13 +592,16 @@ async function PublicPortfolioContent({
               <p className="text-xs font-bold uppercase tracking-[0.3em] text-blue-300">
                 My Career Goal
               </p>
+
               <h2 className="mt-5 text-3xl font-black leading-tight sm:text-5xl">
                 Building my future as a{" "}
                 <span className="text-blue-300">{role}</span>
               </h2>
+
               <p className="mt-6 leading-8 text-slate-300">
                 I am continuously learning, developing practical projects, and improving my technical knowledge to grow as a professional.
               </p>
+
               <a
                 href="#contact"
                 className="mt-8 inline-flex rounded-xl bg-white px-6 py-3.5 font-bold text-slate-950 transition hover:-translate-y-1 hover:bg-blue-100"
@@ -574,9 +622,11 @@ async function PublicPortfolioContent({
           <p className="text-xs font-bold uppercase tracking-[0.3em] text-blue-400">
             Get In Touch
           </p>
+
           <h2 className="mt-4 text-4xl font-black sm:text-6xl">
             Let's Connect<span className="text-blue-400">.</span>
           </h2>
+
           <p className="mx-auto mt-6 max-w-2xl text-lg leading-8 text-slate-400">
             Thank you for visiting my portfolio. I'm always interested in learning, sharing ideas, and connecting with people.
           </p>
@@ -591,6 +641,7 @@ async function PublicPortfolioContent({
                 Email Me
                 <span>↗</span>
               </a>
+
               <p className="mt-5 break-all text-sm text-slate-400">
                 {email}
               </p>
@@ -609,6 +660,7 @@ async function PublicPortfolioContent({
           <p className="text-sm text-slate-500">
             © {new Date().getFullYear()} {name}. All rights reserved.
           </p>
+
           <a
             href="#home"
             className="text-sm font-semibold text-blue-400 transition hover:text-blue-300"
