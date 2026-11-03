@@ -213,6 +213,12 @@ export default function PortfolioPage() {
   const [skills, setSkills] = useState("");
   const [email, setEmail] = useState("");
 
+  // Profile photo state
+  const [photoUrl, setPhotoUrl] = useState("");
+  const [photoFile, setPhotoFile] = useState<File | null>(null);
+  const [photoPreview, setPhotoPreview] = useState("");
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
+
   const [projects, setProjects] = useState<PortfolioProject[]>([
     { ...EMPTY_PROJECT },
   ]);
@@ -238,7 +244,6 @@ export default function PortfolioPage() {
 
   const skillList = useMemo(() => splitItems(skills), [skills]);
 
-  // Split education into separate qualifications using blank lines.
   const educationItems = useMemo(
     () =>
       education
@@ -412,6 +417,51 @@ export default function PortfolioPage() {
   useEffect(() => {
     void refreshAnalysisData();
   }, [refreshAnalysisData]);
+
+  // Clean up temporary photo preview URLs.
+  useEffect(() => {
+    return () => {
+      if (photoPreview) {
+        URL.revokeObjectURL(photoPreview);
+      }
+    };
+  }, [photoPreview]);
+
+  // Upload profile photo to Supabase Storage.
+  async function uploadPortfolioPhoto(userId: string): Promise<string> {
+    if (!photoFile) return photoUrl;
+
+    const allowedTypes = ["image/jpeg", "image/png", "image/webp"];
+
+    if (!allowedTypes.includes(photoFile.type)) {
+      throw new Error("Please select a JPG, PNG, or WebP image.");
+    }
+
+    if (photoFile.size > 5 * 1024 * 1024) {
+      throw new Error("Image size must be less than 5 MB.");
+    }
+
+    const extension =
+      photoFile.name.split(".").pop()?.toLowerCase() || "jpg";
+
+    const filePath = `${userId}/${Date.now()}.${extension}`;
+
+    const { error } = await supabase.storage
+      .from("portfolio-images")
+      .upload(filePath, photoFile, {
+        cacheControl: "3600",
+        upsert: false,
+        contentType: photoFile.type,
+      });
+
+    if (error) throw error;
+
+    const { data } = supabase.storage
+      .from("portfolio-images")
+      .getPublicUrl(filePath);
+
+    return data.publicUrl;
+  }
 
   // AI ENHANCEMENT
   async function enhancePortfolioContent(
@@ -647,6 +697,10 @@ ${originalText}`;
         return;
       }
 
+      setUploadingPhoto(true);
+
+      const uploadedPhotoUrl = await uploadPortfolioPhoto(user.id);
+
       const { error } = await supabase.from("student_portfolios").upsert(
         {
           user_id: user.id,
@@ -656,6 +710,7 @@ ${originalText}`;
           about,
           skills,
           email,
+          photo_url: uploadedPhotoUrl || null,
           projects: projects.filter((project) => project.title.trim()),
           updated_at: new Date().toISOString(),
         },
@@ -664,10 +719,21 @@ ${originalText}`;
 
       if (error) throw error;
 
-      setMessage("Portfolio saved to your account successfully.");
+      setPhotoUrl(uploadedPhotoUrl);
+      setPhotoFile(null);
+      setPhotoPreview("");
+
+      setMessage("Portfolio and profile photo saved successfully.");
     } catch (error) {
       console.error("Portfolio save error:", error);
-      setMessage("Could not save your portfolio. Check the console for details.");
+
+      setMessage(
+        error instanceof Error
+          ? error.message
+          : "Could not save your portfolio. Please try again."
+      );
+    } finally {
+      setUploadingPhoto(false);
     }
   }
 
@@ -753,6 +819,11 @@ ${originalText}`;
       setAbout(data.about ?? "");
       setSkills(data.skills ?? "");
       setEmail(data.email ?? "");
+
+      // Load saved profile photo.
+      setPhotoUrl(data.photo_url ?? "");
+      setPhotoFile(null);
+      setPhotoPreview("");
 
       setProjects(
         Array.isArray(data.projects) && data.projects.length > 0
@@ -983,10 +1054,11 @@ ${originalText}`;
             <button
               type="button"
               onClick={() => void savePortfolio()}
-              className={`${quickActionClass} bg-purple-600 hover:bg-purple-500`}
+              disabled={uploadingPhoto}
+              className={`${quickActionClass} bg-purple-600 hover:bg-purple-500 disabled:opacity-50`}
             >
               <span className="mr-2">💾</span>
-              Save Portfolio
+              {uploadingPhoto ? "Uploading Photo..." : "Save Portfolio"}
             </button>
 
             <button
@@ -1220,6 +1292,90 @@ ${originalText}`;
           <section className="rounded-2xl border border-slate-800 bg-slate-900 p-5 sm:p-7">
             <h2 className="text-xl font-semibold">Student profile</h2>
 
+            {/* PROFILE PHOTO UPLOAD */}
+            <div className="mt-6 rounded-xl border border-slate-700 bg-slate-950 p-5">
+              <h3 className="text-lg font-semibold">Profile Photo</h3>
+
+              <p className="mt-2 text-sm text-slate-400">
+                Upload a photo to display on your public portfolio. JPG, PNG,
+                or WebP. Maximum size: 5 MB.
+              </p>
+
+              <div className="mt-5 flex flex-col items-center gap-4 sm:flex-row">
+                {photoPreview || photoUrl ? (
+                  <img
+                    src={photoPreview || photoUrl}
+                    alt="Portfolio profile"
+                    className="h-28 w-28 rounded-full border-2 border-purple-500 object-cover"
+                  />
+                ) : (
+                  <div className="flex h-28 w-28 items-center justify-center rounded-full border-2 border-dashed border-slate-600 bg-slate-900 text-4xl">
+                    👤
+                  </div>
+                )}
+
+                <div className="flex flex-wrap items-center gap-3">
+                  <label className="inline-flex cursor-pointer rounded-xl bg-purple-600 px-5 py-3 font-semibold hover:bg-purple-500">
+                    Choose Photo
+
+                    <input
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp"
+                      className="hidden"
+                      onChange={(event) => {
+                        const file = event.target.files?.[0];
+
+                        if (!file) return;
+
+                        if (
+                          !["image/jpeg", "image/png", "image/webp"].includes(
+                            file.type
+                          )
+                        ) {
+                          setMessage(
+                            "Please select a JPG, PNG, or WebP image."
+                          );
+                          event.target.value = "";
+                          return;
+                        }
+
+                        if (file.size > 5 * 1024 * 1024) {
+                          setMessage(
+                            "Image must be smaller than 5 MB."
+                          );
+                          event.target.value = "";
+                          return;
+                        }
+
+                        setPhotoFile(file);
+                        setPhotoPreview(URL.createObjectURL(file));
+                        setMessage(
+                          "Photo selected. Save your portfolio to upload it."
+                        );
+                      }}
+                    />
+                  </label>
+
+                  {(photoPreview || photoUrl) && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPhotoFile(null);
+                        setPhotoPreview("");
+                        setPhotoUrl("");
+                        setMessage(
+                          "Photo removed. Save your portfolio to apply changes."
+                        );
+                      }}
+                      className="text-sm text-red-300 hover:text-red-200"
+                    >
+                      Remove Photo
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+
             <div className="mt-5 grid gap-5 sm:grid-cols-2">
               <label className={labelClass}>
                 Full name
@@ -1234,7 +1390,6 @@ ${originalText}`;
                 />
               </label>
 
-              {/* MULTIPLE EDUCATION QUALIFICATIONS */}
               <label className={`${labelClass} sm:col-span-2`}>
                 Academic Background
 
@@ -1306,10 +1461,7 @@ Academic Score: 85%`}
             <button
               type="button"
               onClick={() => void enhancePortfolioContent("about")}
-              disabled={
-                enhancingSection !== "" ||
-                !about.trim()
-              }
+              disabled={enhancingSection !== "" || !about.trim()}
               className="mt-3 rounded-xl bg-purple-600 px-5 py-3 text-sm font-semibold hover:bg-purple-500 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {enhancingSection === "about"
@@ -1796,9 +1948,10 @@ Academic Score: 85%`}
               <button
                 type="button"
                 onClick={() => void savePortfolio()}
-                className="rounded-xl bg-purple-600 px-5 py-3 font-semibold hover:bg-purple-500"
+                disabled={uploadingPhoto}
+                className="rounded-xl bg-purple-600 px-5 py-3 font-semibold hover:bg-purple-500 disabled:opacity-50"
               >
-                Save portfolio
+                {uploadingPhoto ? "Uploading Photo..." : "Save portfolio"}
               </button>
 
               <button
@@ -1947,18 +2100,30 @@ Academic Score: 85%`}
         {showPreview && (
           <section className="mt-8 rounded-2xl border border-slate-700 bg-white p-6 text-slate-900 sm:p-10">
             <div className="flex flex-wrap items-start justify-between gap-4">
-              <div>
-                <h2 className="text-3xl font-bold">
-                  {name.trim() || "Your Name"}
-                </h2>
-                <p className="mt-2 text-lg text-slate-600">
-                  {careerGoal.trim() || "Your Career Goal"}
-                </p>
-                {education.trim() && (
-                  <p className="mt-1 text-sm text-slate-500">
-                    {educationItems[0]?.split("\n")[0] || education}
+              <div className="flex flex-wrap items-center gap-5">
+                {photoPreview || photoUrl ? (
+                  <img
+                    src={photoPreview || photoUrl}
+                    alt="Profile photo"
+                    className="h-28 w-28 rounded-full border-4 border-purple-200 object-cover"
+                  />
+                ) : null}
+
+                <div>
+                  <h2 className="text-3xl font-bold">
+                    {name.trim() || "Your Name"}
+                  </h2>
+
+                  <p className="mt-2 text-lg text-slate-600">
+                    {careerGoal.trim() || "Your Career Goal"}
                   </p>
-                )}
+
+                  {education.trim() && (
+                    <p className="mt-1 text-sm text-slate-500">
+                      {educationItems[0]?.split("\n")[0] || education}
+                    </p>
+                  )}
+                </div>
               </div>
 
               <button
@@ -1979,7 +2144,6 @@ Academic Score: 85%`}
                 "Add your introduction in the portfolio form."}
             </p>
 
-            {/* PROFESSIONAL EDUCATION TIMELINE */}
             <h3 className="mt-8 text-2xl font-bold text-slate-900">
               Education
             </h3>
@@ -2052,8 +2216,6 @@ Academic Score: 85%`}
             <p className="mt-2 text-slate-700">
               Skills to develop: {missingSkills.join(", ") || "Not identified"}
             </p>
-
-            {/* Learning Progress section remains removed from inline preview */}
 
             <h3 className="mt-6 text-xl font-semibold">Projects</h3>
 

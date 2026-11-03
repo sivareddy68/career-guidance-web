@@ -19,6 +19,7 @@ type PortfolioData = {
   about?: string;
   skills?: string;
   email?: string;
+  photoUrl?: string;
   projects?: PortfolioProject[];
 };
 
@@ -75,6 +76,14 @@ export default function PortfolioPreviewPage() {
           about: parsed.about ?? data.about ?? "",
           skills: parsed.skills ?? data.skills ?? "",
           email: parsed.email ?? data.email ?? "",
+
+          // Load the saved profile photo URL from Supabase.
+          photoUrl:
+            data.photo_url ??
+            parsed.photo_url ??
+            parsed.photoUrl ??
+            "",
+
           projects: Array.isArray(parsed.projects)
             ? parsed.projects
             : [],
@@ -157,6 +166,7 @@ export default function PortfolioPreviewPage() {
   const hasAbout = Boolean(portfolio.about?.trim());
   const hasEducation = Boolean(portfolio.education?.trim());
   const hasEmail = Boolean(portfolio.email?.trim());
+  const hasPhoto = Boolean(portfolio.photoUrl?.trim());
 
   return (
     <main className="min-h-screen scroll-smooth bg-[#070b18] text-white">
@@ -294,8 +304,17 @@ export default function PortfolioPreviewPage() {
                   </span>
                 </div>
 
-                <div className="mx-auto mt-10 flex h-40 w-40 items-center justify-center rounded-full border-4 border-cyan-400/20 bg-gradient-to-br from-cyan-500/20 to-indigo-500/20 text-6xl font-black text-cyan-300 shadow-xl shadow-cyan-950/30">
-                  {initials}
+                {/* PROFILE PHOTO */}
+                <div className="mx-auto mt-10 flex h-40 w-40 items-center justify-center overflow-hidden rounded-full border-4 border-cyan-400/20 bg-gradient-to-br from-cyan-500/20 to-indigo-500/20 text-6xl font-black text-cyan-300 shadow-xl shadow-cyan-950/30">
+                  {hasPhoto ? (
+                    <img
+                      src={portfolio.photoUrl}
+                      alt={`${name}'s profile`}
+                      className="h-full w-full rounded-full object-cover"
+                    />
+                  ) : (
+                    initials
+                  )}
                 </div>
 
                 <div className="mt-8 text-center">
